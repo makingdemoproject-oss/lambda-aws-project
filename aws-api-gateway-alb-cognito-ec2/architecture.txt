@@ -1,0 +1,109 @@
+╔══════════════════════════════════════════════════════════════════════════╗
+║           AWS: API Gateway + ALB + Cognito Custom Auth + EC2            ║
+╚══════════════════════════════════════════════════════════════════════════╝
+
+ARCHITECTURE:
+─────────────────────────────────────────────────────────────────────────
+
+  Browser / React App
+       │
+       │  HTTPS
+       ▼
+  ┌─────────────────────────────────────────────────────────────────┐
+  │  API Gateway (HTTP API) — wxv12mu6bg.execute-api.ap-south-1    │
+  │                                                                 │
+  │  Routes:                                                        │
+  │    ANY /api/v1/{proxy+}   → ALB  [NO AUTH — login/register]    │
+  │    ANY /api/app/{proxy+}  → ALB  [Cognito JWT required]        │
+  │    ANY /api/rbac/{proxy+} → ALB  [Cognito JWT required]        │
+  │                                                                 │
+  │  Cognito JWT Authorizer:                                        │
+  │    Pool:   ap-south-1_DsHwA8dVJ                                │
+  │    Client: 20qlu1pvf3ev7a3hpl3l41dbrp                          │
+  │                                                                 │
+  │  Rate Limit: 100 req/s burst, 50 burst limit                   │
+  │  VPC Link → ALB (private network)                              │
+  └──────────────────────────┬──────────────────────────────────────┘
+                             │  VPC Link (private)
+                             ▼
+  ┌──────────────────────────────────────────────────────────────────┐
+  │  ALB — app-alb-production (ap-south-1)                          │
+  │                                                                  │
+  │  Listener Port 80:                                              │
+  │    Rule 1 (priority 10): /api/app/*  → Express TG (port 3001)  │
+  │    Rule 2 (priority 20): /api/v1/*   → RBAC TG    (port 80)    │
+  │    Default:              all others  → RBAC TG    (port 80)    │
+  └────────────┬──────────────────────────────┬──────────────────────┘
+               │                              │
+               ▼                              ▼
+  ┌────────────────────────┐    ┌─────────────────────────────────────┐
+  │  Express EC2           │    │  RBAC EC2 (existing)                │
+  │  13.200.198.212:3001   │    │  13.207.251.13 (nginx port 80)      │
+  │                        │    │                                     │
+  │  Services:             │    │  nginx :80 → proxy → :4000          │
+  │    GET /api/app/products│   │                                     │
+  │    GET /api/app/orders │    │  rbac-service (PM2, port 4000):     │
+  │    GET /api/app/users  │    │    POST /api/v1/auth/login          │
+  │    GET /api/app/payments│   │    POST /api/v1/auth/register       │
+  │    GET /api/app/inventory│  │    GET  /api/rbac/roles             │
+  │    POST /api/app/orders│    │                                     │
+  │    POST /api/app/payments│  │  PostgreSQL (RDS):                  │
+  └────────────────────────┘    │    postgres-production.cn2y...      │
+                                └─────────────────────────────────────┘
+
+COGNITO CUSTOM AUTH FLOW:
+──────────────────────────────────────────────────────────────────────────
+
+  Client                    Cognito                    Lambda Triggers
+    │                          │                             │
+    │── InitiateAuth ─────────►│                             │
+    │   (CUSTOM_AUTH, email)   │──── DefineAuthChallenge ──►│
+    │                          │   session=[] → CUSTOM_CHALLENGE
+    │◄── CUSTOM_CHALLENGE ─────│◄────────────────────────────│
+    │    publicChallengeParams  │──── CreateAuthChallenge ──►│
+    │                          │◄────────────────────────────│
+    │                          │
+    │── RespondToChallenge ────►│
+    │   ANSWER: {email,password}│──── VerifyAuthChallenge ──►│
+    │                          │         │                   │
+    │                          │         ▼                   │
+    │                          │    RBAC EC2 POST            │
+    │                          │    /api/auth/login          │
+    │                          │         │                   │
+    │                          │         ▼                   │
+    │                          │    PostgreSQL               │
+    │                          │    SELECT * FROM users      │
+    │                          │    bcrypt.compare(pwd)      │
+    │                          │         │                   │
+    │                          │    answerCorrect: true/false│
+    │                          │◄────────────────────────────│
+    │                          │──── DefineAuthChallenge ──►│
+    │                          │   session[0].result=true → issueTokens
+    │◄── AccessToken ──────────│◄────────────────────────────│
+    │    IdToken               │
+    │    RefreshToken          │
+
+PROJECT STRUCTURE:
+──────────────────────────────────────────────────────────────────────────
+
+  aws-api-gateway-alb-cognito-ec2/
+  ├── cloudformation/
+  │   └── alb-cognito-apigw.yaml        # Full CloudFormation stack
+  ├── express-service/                   # EC2 Express multi-service app
+  │   ├── index.js                       # 5 service routes (products,orders,users,payments,inventory)
+  │   ├── package.json
+  │   └── ecosystem.config.js            # PM2 cluster config
+  ├── rbac-service/                      # RBAC auth service (PostgreSQL)
+  │   ├── index.js                       # Auth + RBAC routes (port 4000)
+  │   ├── package.json
+  │   └── nginx.conf                     # nginx proxy config (port 80 → 4000)
+  ├── cognito-lambda-triggers/           # 3 Lambda functions for custom auth
+  │   ├── define-auth-challenge.js       # Trigger 1: decide issueTokens or challenge
+  │   ├── create-auth-challenge.js       # Trigger 2: create challenge params
+  │   └── verify-auth-challenge.js       # Trigger 3: validate → RBAC EC2 → PostgreSQL
+  ├── cognito-client/                    # Client-side Cognito SDK usage
+  │   ├── index.js                       # CUSTOM_AUTH flow demo
+  │   └── package.json
+  ├── test-webapp/
+  │   └── index.html                     # End-to-end test UI
+  └── architecture.txt                   # This file

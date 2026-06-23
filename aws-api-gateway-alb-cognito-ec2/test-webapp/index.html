@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>End-to-End Test — API Gateway + Cognito + ALB</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Segoe UI',sans-serif;background:#0f172a;color:#e2e8f0;min-height:100vh}
+.top{background:#1e293b;padding:16px 24px;border-bottom:2px solid #3b82f6}
+.top h1{color:#60a5fa;font-size:1.2rem}
+.top p{color:#94a3b8;font-size:.8rem;margin-top:4px}
+.arch{background:#0f2027;color:#34d399;font-family:monospace;font-size:.75rem;padding:8px 24px;border-bottom:1px solid #1e293b;white-space:nowrap;overflow-x:auto}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:0;height:calc(100vh - 90px)}
+.panel{padding:20px;overflow-y:auto;border-right:1px solid #1e293b}
+.section{background:#1e293b;border-radius:10px;padding:16px;margin-bottom:16px}
+.section h3{color:#60a5fa;font-size:.85rem;margin-bottom:12px;text-transform:uppercase;letter-spacing:.5px}
+label{display:block;font-size:.75rem;color:#94a3b8;margin-bottom:4px;margin-top:10px}
+input{width:100%;padding:8px 12px;background:#0f172a;border:1px solid #334155;border-radius:6px;color:#e2e8f0;font-size:.85rem}
+input:focus{outline:none;border-color:#3b82f6}
+.btn{padding:9px 18px;border:none;border-radius:6px;cursor:pointer;font-size:.82rem;font-weight:600;margin-top:10px;width:100%;transition:.2s}
+.btn-blue{background:#3b82f6;color:white}.btn-blue:hover{background:#2563eb}
+.btn-green{background:#059669;color:white}.btn-green:hover{background:#047857}
+.btn-purple{background:#7c3aed;color:white}.btn-purple:hover{background:#6d28d9}
+.btn-red{background:#dc2626;color:white}.btn-red:hover{background:#b91c1c}
+.token-box{background:#0f172a;border:1px solid #334155;border-radius:6px;padding:8px;font-size:.7rem;color:#34d399;font-family:monospace;word-break:break-all;max-height:60px;overflow-y:auto;margin-top:8px}
+.routes{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
+.route-btn{padding:6px 12px;border-radius:6px;cursor:pointer;font-size:.75rem;border:1px solid;transition:.2s}
+.route-get{background:#1a2e1a;border-color:#059669;color:#34d399}.route-get:hover{background:#15432a}
+.route-post{background:#2e1a1a;border-color:#dc2626;color:#f87171}.route-post:hover{background:#451515}
+.log{padding:20px;background:#020816;overflow-y:auto;font-family:monospace;font-size:.78rem}
+.log-entry{margin-bottom:16px;border-left:3px solid #3b82f6;padding-left:12px}
+.log-entry.success{border-color:#059669}
+.log-entry.error{border-color:#dc2626}
+.log-entry.info{border-color:#7c3aed}
+.log-time{color:#64748b;font-size:.7rem}
+.log-route{color:#60a5fa;font-size:.8rem;margin:2px 0}
+.log-status-ok{color:#34d399}.log-status-err{color:#f87171}
+.log-body{color:#cbd5e1;margin-top:4px;white-space:pre-wrap;word-wrap:break-word}
+.badge{display:inline-block;padding:2px 7px;border-radius:4px;font-size:.65rem;font-weight:bold}
+.badge-get{background:#064e3b;color:#34d399}
+.badge-post{background:#7f1d1d;color:#fca5a5}
+.badge-jwt{background:#4c1d95;color:#c4b5fd}
+.badge-pub{background:#064e3b;color:#6ee7b7}
+.status-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.status-chip{padding:4px 10px;border-radius:20px;font-size:.72rem}
+.chip-ok{background:#065f46;color:#34d399}
+.chip-err{background:#7f1d1d;color:#fca5a5}
+.chip-idle{background:#1e293b;color:#64748b}
+</style>
+</head>
+<body>
+
+<div class="top">
+  <h1>End-to-End Test — API Gateway + Cognito + ALB + EC2</h1>
+  <p>API GW: <strong>wxv12mu6bg</strong> (ap-south-1) &nbsp;|&nbsp; ALB: app-alb-production &nbsp;|&nbsp; Stage: production</p>
+</div>
+
+<div class="arch">
+  Browser → API Gateway (Cognito JWT + Rate Limit 100/s) → ALB → [/api/v1/* → RBAC EC2 :80] [/api/app/* → Express EC2 :3001]
+</div>
+
+<div class="grid">
+  <!-- LEFT PANEL -->
+  <div class="panel">
+
+    <div class="section">
+      <h3>Step 1 — Register (RBAC → PostgreSQL)</h3>
+      <label>Email</label>
+      <input id="reg-email" value="demo@test.com">
+      <label>Password (10+ chars)</label>
+      <input id="reg-pass" type="password" value="Demo@12345678">
+      <label>First Name</label>
+      <input id="reg-fname" value="Demo">
+      <button class="btn btn-green" onclick="register()">Register User</button>
+    </div>
+
+    <div class="section">
+      <h3>Step 2 — Login (Get JWT Token)</h3>
+      <label>Email</label>
+      <input id="login-email" value="demo@test.com">
+      <label>Password</label>
+      <input id="login-pass" type="password" value="Demo@12345678">
+      <button class="btn btn-blue" onclick="login()">Login → Get Token</button>
+      <div class="token-box" id="token-display">No token yet — login first</div>
+    </div>
+
+    <div class="section">
+      <h3>Step 3 — Call Protected Routes (via API Gateway)</h3>
+      <p style="font-size:.75rem;color:#94a3b8;margin-bottom:8px">JWT token automatically sent in Authorization header</p>
+      <div class="routes">
+        <button class="route-btn route-get" onclick="apiCall('GET','/api/app/products')">
+          <span class="badge badge-get">GET</span> products
+        </button>
+        <button class="route-btn route-get" onclick="apiCall('GET','/api/app/orders')">
+          <span class="badge badge-get">GET</span> orders
+        </button>
+        <button class="route-btn route-get" onclick="apiCall('GET','/api/app/users')">
+          <span class="badge badge-get">GET</span> users
+        </button>
+        <button class="route-btn route-get" onclick="apiCall('GET','/api/app/payments')">
+          <span class="badge badge-get">GET</span> payments
+        </button>
+        <button class="route-btn route-get" onclick="apiCall('GET','/api/app/inventory')">
+          <span class="badge badge-get">GET</span> inventory
+        </button>
+        <button class="route-btn route-post" onclick="apiCall('POST','/api/app/orders',{productId:1,qty:2})">
+          <span class="badge badge-post">POST</span> place order
+        </button>
+        <button class="route-btn route-post" onclick="apiCall('POST','/api/app/payments',{orderId:'ORD-001',amount:5000})">
+          <span class="badge badge-post">POST</span> payment
+        </button>
+      </div>
+    </div>
+
+    <div class="section">
+      <h3>Test Without Token (should return 401)</h3>
+      <button class="btn btn-red" onclick="apiCallNoAuth('GET','/api/app/products')">
+        Call /api/app/products (No JWT) → Expect 401
+      </button>
+    </div>
+
+    <div class="section">
+      <h3>Run All Routes</h3>
+      <button class="btn btn-purple" onclick="runAll()">Run All 5 Protected Routes</button>
+    </div>
+
+    <div class="section">
+      <h3>Status</h3>
+      <div class="status-row">
+        <span class="status-chip chip-idle" id="chip-register">Register: idle</span>
+        <span class="status-chip chip-idle" id="chip-login">Login: idle</span>
+        <span class="status-chip chip-idle" id="chip-token">Token: none</span>
+        <span class="status-chip chip-idle" id="chip-apigw">API GW: idle</span>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- RIGHT LOG PANEL -->
+  <div class="log" id="log">
+    <div class="log-entry info">
+      <div class="log-time">Ready</div>
+      <div class="log-route">Architecture</div>
+      <div class="log-body">API Gateway URL: https://wxv12mu6bg.execute-api.ap-south-1.amazonaws.com/production
+ALB:            http://app-alb-production-108161327.ap-south-1.elb.amazonaws.com
+RBAC EC2:       13.207.251.13:80 (nginx → port 4000)
+Express EC2:    13.200.198.212:3001
+
+Routes (API Gateway):
+  ANY /api/v1/{proxy+}   → RBAC EC2    [NO AUTH]
+  ANY /api/app/{proxy+}  → Express EC2 [Cognito JWT]
+  ANY /api/rbac/{proxy+} → RBAC EC2    [Cognito JWT]
+
+Cognito Pool:   ap-south-1_DsHwA8dVJ
+Client ID:      20qlu1pvf3ev7a3hpl3l41dbrp</div>
+    </div>
+  </div>
+</div>
+
+<script>
+const API_GW = 'https://wxv12mu6bg.execute-api.ap-south-1.amazonaws.com/production';
+const ALB    = 'http://app-alb-production-108161327.ap-south-1.elb.amazonaws.com';
+let token = localStorage.getItem('jwt') || '';
+if (token) {
+  document.getElementById('token-display').textContent = 'Stored: ' + token.slice(0,80) + '...';
+  chip('chip-token','Token: OK','ok');
+}
+
+function chip(id, text, state) {
+  const el = document.getElementById(id);
+  el.textContent = text;
+  el.className = 'status-chip ' + (state==='ok'?'chip-ok':state==='err'?'chip-err':'chip-idle');
+}
+
+function log(method, url, status, body, type='success') {
+  const panel = document.getElementById('log');
+  const m = method==='GET' ? `<span class="badge badge-get">GET</span>` : `<span class="badge badge-post">POST</span>`;
+  const sc = (status>=200&&status<300) ? `<span class="log-status-ok">${status} OK</span>` : `<span class="log-status-err">${status}</span>`;
+  const entry = document.createElement('div');
+  entry.className = `log-entry ${type}`;
+  entry.innerHTML = `
+    <div class="log-time">${new Date().toLocaleTimeString()}</div>
+    <div class="log-route">${m} ${url} &nbsp; ${sc}</div>
+    <div class="log-body">${JSON.stringify(body, null, 2)}</div>`;
+  panel.insertBefore(entry, panel.firstChild);
+}
+
+async function register() {
+  chip('chip-register','Registering...','idle');
+  const body = {
+    email: document.getElementById('reg-email').value,
+    password: document.getElementById('reg-pass').value,
+    firstName: document.getElementById('reg-fname').value,
+    lastName: 'User'
+  };
+  try {
+    const r = await fetch(ALB + '/api/v1/auth/register', {
+      method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)
+    });
+    const d = await r.json();
+    log('POST', ALB+'/api/v1/auth/register', r.status, d, r.ok?'success':'error');
+    chip('chip-register', r.ok?'Register: OK':'Register: '+r.status, r.ok?'ok':'err');
+  } catch(e) {
+    log('POST','/api/v1/auth/register','ERR',{error:e.message},'error');
+    chip('chip-register','Register: Error','err');
+  }
+}
+
+async function login() {
+  chip('chip-login','Logging in...','idle');
+  const body = {
+    email: document.getElementById('login-email').value,
+    password: document.getElementById('login-pass').value
+  };
+  try {
+    const r = await fetch(ALB + '/api/v1/auth/login', {
+      method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)
+    });
+    const d = await r.json();
+    log('POST', ALB+'/api/v1/auth/login', r.status, d, r.ok?'success':'error');
+    if (r.ok) {
+      const t = d.token || d.accessToken || d.data?.token || d.data?.accessToken;
+      if (t) {
+        token = t;
+        localStorage.setItem('jwt', t);
+        document.getElementById('token-display').textContent = t;
+        chip('chip-token','Token: OK ✓','ok');
+      }
+      chip('chip-login','Login: OK','ok');
+    } else {
+      chip('chip-login','Login: '+r.status,'err');
+    }
+  } catch(e) {
+    log('POST','/api/v1/auth/login','ERR',{error:e.message},'error');
+    chip('chip-login','Login: Error','err');
+  }
+}
+
+async function apiCall(method, path, body=null) {
+  if (!token) { log(method, path, 401, {error:'No token — login first'}, 'error'); return; }
+  chip('chip-apigw','API GW: calling...','idle');
+  const url = API_GW + path;
+  try {
+    const r = await fetch(url, {
+      method,
+      headers: {'Content-Type':'application/json', 'Authorization':'Bearer '+token},
+      body: body ? JSON.stringify(body) : undefined
+    });
+    const d = await r.json();
+    log(method, path, r.status, d, r.ok?'success':'error');
+    chip('chip-apigw', r.ok?'API GW: OK '+r.status:'API GW: '+r.status, r.ok?'ok':'err');
+  } catch(e) {
+    log(method, path, 'ERR', {error:e.message, hint:'CORS? Use ALB directly: '+ALB+path}, 'error');
+    chip('chip-apigw','API GW: CORS/Error','err');
+  }
+}
+
+async function apiCallNoAuth(method, path) {
+  const url = API_GW + path;
+  try {
+    const r = await fetch(url, { method, headers:{'Content-Type':'application/json'} });
+    const d = await r.json().catch(()=>({status:r.status}));
+    log(method, path+' (NO TOKEN)', r.status, d, r.ok?'success':'error');
+  } catch(e) {
+    log(method, path+' (NO TOKEN)', 'ERR', {error:e.message}, 'error');
+  }
+}
+
+async function runAll() {
+  const routes = ['/api/app/products','/api/app/orders','/api/app/users','/api/app/payments','/api/app/inventory'];
+  for (const p of routes) {
+    await apiCall('GET', p);
+    await new Promise(r=>setTimeout(r,400));
+  }
+}
+</script>
+</body>
+</html>

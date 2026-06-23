@@ -1,0 +1,612 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: |
+  ALB + 2 EC2 + API Gateway + Cognito Custom Auth (PostgreSQL)
+  Architecture: Client -> API Gateway (Cognito JWT + Rate Limit) -> ALB -> EC2s
+
+Parameters:
+  Environment:
+    Type: String
+    Default: production
+
+  VpcId:
+    Type: String
+    Default: vpc-065599aca72278f93
+
+  SubnetA:
+    Type: String
+    Default: subnet-0e4f8a39a1e33b77e   # ap-south-1a (RBAC EC2 here)
+
+  SubnetB:
+    Type: String
+    Default: subnet-08f4b25fe38bdf09a   # ap-south-1c
+
+  SubnetC:
+    Type: String
+    Default: subnet-0b8d18d376a07ea45   # ap-south-1b
+
+  RbacEC2InstanceId:
+    Type: String
+    Default: i-0dda96ea16a03281d
+
+  RbacEC2PrivateIP:
+    Type: String
+    Default: 172.31.33.6
+
+  KeyPairName:
+    Type: String
+    Default: rajesh-key-pair
+
+  AmiId:
+    Type: String
+    Default: ami-0e38835daf6b8a2b9   # Amazon Linux 2023 ap-south-1
+
+  RdsEndpoint:
+    Type: String
+    Default: postgres-production.cn2yekq0q1tg.ap-south-1.rds.amazonaws.com
+
+  RdsPassword:
+    Type: String
+    Default: SecurePass2024#Prod
+    NoEcho: true
+
+# ─────────────────────────────────────────────
+# SECURITY GROUPS
+# ─────────────────────────────────────────────
+Resources:
+
+  AlbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub alb-sg-${Environment}
+      GroupDescription: ALB - allow HTTP/HTTPS from internet
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub alb-sg-${Environment}
+
+  ExpressEC2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub express-ec2-sg-${Environment}
+      GroupDescription: Express EC2 - allow from ALB only
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3001
+          ToPort: 3001
+          SourceSecurityGroupId: !Ref AlbSecurityGroup
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub express-ec2-sg-${Environment}
+
+# ─────────────────────────────────────────────
+# ALLOW RBAC EC2 from ALB (ingress rule on existing SG)
+# ─────────────────────────────────────────────
+  RbacAlbIngressRule:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: sg-0545778ef69ee6f6a   # existing RBAC EC2 SG
+      IpProtocol: tcp
+      FromPort: 3000
+      ToPort: 3000
+      SourceSecurityGroupId: !Ref AlbSecurityGroup
+
+# ─────────────────────────────────────────────
+# NEW FREE EC2 (t2.micro) — Express Service
+# ─────────────────────────────────────────────
+  ExpressEC2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub express-ec2-role-${Environment}
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+        - arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
+
+  ExpressEC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles: [!Ref ExpressEC2Role]
+
+  ExpressEC2:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t3.micro
+      ImageId: !Ref AmiId
+      KeyName: !Ref KeyPairName
+      SubnetId: !Ref SubnetB
+      SecurityGroupIds: [!GetAtt ExpressEC2SecurityGroup.GroupId]
+      IamInstanceProfile: !Ref ExpressEC2InstanceProfile
+      Tags:
+        - Key: Name
+          Value: !Sub express-service-${Environment}
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          yum update -y
+          curl -fsSL https://rpm.nodesource.com/setup_20.x | bash -
+          yum install -y nodejs git
+          npm install -g pm2
+
+          mkdir -p /app/express-service
+          cat > /app/express-service/index.js << 'APPEOF'
+          const express = require('express');
+          const app = express();
+          app.use(express.json());
+
+          app.get('/health', (req, res) => res.json({ status: 'ok', service: 'express-service' }));
+
+          app.get('/api/app/products', (req, res) => {
+            const user = req.headers['x-user-id'] || 'anonymous';
+            res.json({ products: [
+              { id: 1, name: 'Product A', price: 100 },
+              { id: 2, name: 'Product B', price: 200 },
+            ], requestedBy: user });
+          });
+
+          app.get('/api/app/orders', (req, res) => {
+            const user = req.headers['x-user-id'] || 'anonymous';
+            res.json({ orders: [
+              { id: 'ORD-001', status: 'placed', amount: 1500 },
+              { id: 'ORD-002', status: 'shipped', amount: 3000 },
+            ], requestedBy: user });
+          });
+
+          app.post('/api/app/orders', (req, res) => {
+            res.status(201).json({ orderId: 'ORD-' + Date.now(), status: 'placed', ...req.body });
+          });
+
+          app.listen(3001, () => console.log('Express service on port 3001'));
+          APPEOF
+
+          cd /app/express-service
+          npm init -y
+          npm install express
+          pm2 start index.js --name express-service
+          pm2 save
+          pm2 startup systemd -u root --hp /root
+
+# ─────────────────────────────────────────────
+# ALB
+# ─────────────────────────────────────────────
+  ApplicationLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub app-alb-${Environment}
+      Type: application
+      Scheme: internet-facing
+      SecurityGroups: [!GetAtt AlbSecurityGroup.GroupId]
+      Subnets:
+        - !Ref SubnetA
+        - !Ref SubnetB
+        - !Ref SubnetC
+      Tags:
+        - Key: Name
+          Value: !Sub app-alb-${Environment}
+
+  # Target Group 1 — RBAC Service (port 3000)
+  RbacTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub rbac-tg-${Environment}
+      VpcId: !Ref VpcId
+      Protocol: HTTP
+      Port: 3000
+      TargetType: instance
+      Targets:
+        - Id: !Ref RbacEC2InstanceId
+          Port: 3000
+      HealthCheckPath: /health
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Tags:
+        - Key: Name
+          Value: rbac-tg
+
+  # Target Group 2 — Express Service (port 3001)
+  ExpressTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub express-tg-${Environment}
+      VpcId: !Ref VpcId
+      Protocol: HTTP
+      Port: 3001
+      TargetType: instance
+      Targets:
+        - Id: !Ref ExpressEC2
+          Port: 3001
+      HealthCheckPath: /health
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Tags:
+        - Key: Name
+          Value: express-tg
+
+  # ALB Listener (port 80)
+  ALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref RbacTargetGroup
+
+  # Routing Rule 1: /api/app/* → Express EC2
+  ExpressRoutingRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      ListenerArn: !Ref ALBListener
+      Priority: 10
+      Conditions:
+        - Field: path-pattern
+          Values: ['/api/app/*']
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref ExpressTargetGroup
+
+  # Routing Rule 2: /api/auth/* → RBAC EC2
+  RbacRoutingRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      ListenerArn: !Ref ALBListener
+      Priority: 20
+      Conditions:
+        - Field: path-pattern
+          Values: ['/api/auth/*', '/api/rbac/*']
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref RbacTargetGroup
+
+# ─────────────────────────────────────────────
+# COGNITO USER POOL (Custom Auth — PostgreSQL)
+# ─────────────────────────────────────────────
+  CognitoAuthLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub cognito-auth-lambda-role-${Environment}
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  # Lambda: DefineAuthChallenge
+  DefineAuthChallengeLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub cognito-define-auth-${Environment}
+      Runtime: nodejs20.x
+      Handler: index.handler
+      Role: !GetAtt CognitoAuthLambdaRole.Arn
+      Timeout: 10
+      Code:
+        ZipFile: |
+          exports.handler = async (event) => {
+            if (event.request.session.length === 0) {
+              event.response.issueTokens = false;
+              event.response.failAuthentication = false;
+              event.response.challengeName = 'CUSTOM_CHALLENGE';
+            } else if (
+              event.request.session.length === 1 &&
+              event.request.session[0].challengeResult === true
+            ) {
+              event.response.issueTokens = true;
+              event.response.failAuthentication = false;
+            } else {
+              event.response.issueTokens = false;
+              event.response.failAuthentication = true;
+            }
+            return event;
+          };
+
+  # Lambda: CreateAuthChallenge
+  CreateAuthChallengeLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub cognito-create-challenge-${Environment}
+      Runtime: nodejs20.x
+      Handler: index.handler
+      Role: !GetAtt CognitoAuthLambdaRole.Arn
+      Timeout: 10
+      Code:
+        ZipFile: |
+          exports.handler = async (event) => {
+            event.response.publicChallengeParameters = { type: 'PASSWORD_VERIFIER' };
+            event.response.privateChallengeParameters = { type: 'PASSWORD_VERIFIER' };
+            event.response.challengeMetadata = 'PASSWORD_CHALLENGE';
+            return event;
+          };
+
+  # Lambda: VerifyAuthChallenge (validates against RBAC PostgreSQL)
+  VerifyAuthChallengeLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub cognito-verify-challenge-${Environment}
+      Runtime: nodejs20.x
+      Handler: index.handler
+      Role: !GetAtt CognitoAuthLambdaRole.Arn
+      Timeout: 15
+      Environment:
+        Variables:
+          RBAC_API_URL: !Sub "http://${RbacEC2PrivateIP}:3000"
+      Code:
+        ZipFile: |
+          const https = require('http');
+          exports.handler = async (event) => {
+            const answer = JSON.parse(event.request.challengeAnswer);
+            const { email, password } = answer;
+            try {
+              const result = await callRbac(email, password);
+              event.response.answerCorrect = result.success;
+            } catch (e) {
+              console.error('RBAC verify error:', e.message);
+              event.response.answerCorrect = false;
+            }
+            return event;
+          };
+          function callRbac(email, password) {
+            return new Promise((resolve, reject) => {
+              const data = JSON.stringify({ email, password });
+              const opts = {
+                hostname: process.env.RBAC_API_URL.replace('http://', '').split(':')[0],
+                port: 3000,
+                path: '/api/auth/login',
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Content-Length': data.length }
+              };
+              const req = https.request(opts, (res) => {
+                let body = '';
+                res.on('data', d => body += d);
+                res.on('end', () => resolve({ success: res.statusCode === 200, body: JSON.parse(body) }));
+              });
+              req.on('error', reject);
+              req.write(data);
+              req.end();
+            });
+          }
+
+  # Cognito User Pool
+  CognitoUserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub rbac-user-pool-${Environment}
+      UsernameAttributes: [email]
+      AutoVerifiedAttributes: [email]
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireUppercase: true
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: false
+      LambdaConfig:
+        DefineAuthChallenge: !GetAtt DefineAuthChallengeLambda.Arn
+        CreateAuthChallenge: !GetAtt CreateAuthChallengeLambda.Arn
+        VerifyAuthChallengeResponse: !GetAtt VerifyAuthChallengeLambda.Arn
+      Schema:
+        - Name: email
+          AttributeDataType: String
+          Required: true
+          Mutable: true
+        - Name: role
+          AttributeDataType: String
+          Required: false
+          Mutable: true
+
+  # Allow Cognito to invoke Lambda triggers
+  DefineAuthLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref DefineAuthChallengeLambda
+      Action: lambda:InvokeFunction
+      Principal: cognito-idp.amazonaws.com
+      SourceArn: !GetAtt CognitoUserPool.Arn
+
+  CreateAuthLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref CreateAuthChallengeLambda
+      Action: lambda:InvokeFunction
+      Principal: cognito-idp.amazonaws.com
+      SourceArn: !GetAtt CognitoUserPool.Arn
+
+  VerifyAuthLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref VerifyAuthChallengeLambda
+      Action: lambda:InvokeFunction
+      Principal: cognito-idp.amazonaws.com
+      SourceArn: !GetAtt CognitoUserPool.Arn
+
+  # Cognito User Pool Client
+  CognitoUserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: !Sub rbac-client-${Environment}
+      UserPoolId: !Ref CognitoUserPool
+      ExplicitAuthFlows:
+        - ALLOW_CUSTOM_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+      GenerateSecret: false
+      AccessTokenValidity: 1       # hours
+      IdTokenValidity: 1
+      RefreshTokenValidity: 30     # days
+      TokenValidityUnits:
+        AccessToken: hours
+        IdToken: hours
+        RefreshToken: days
+
+# ─────────────────────────────────────────────
+# API GATEWAY (HTTP API)
+# ─────────────────────────────────────────────
+  HttpApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Sub rbac-http-api-${Environment}
+      ProtocolType: HTTP
+      CorsConfiguration:
+        AllowOrigins: ['*']
+        AllowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS']
+        AllowHeaders: ['Authorization', 'Content-Type']
+
+  # Cognito JWT Authorizer
+  CognitoAuthorizer:
+    Type: AWS::ApiGatewayV2::Authorizer
+    Properties:
+      ApiId: !Ref HttpApi
+      Name: CognitoJWTAuthorizer
+      AuthorizerType: JWT
+      IdentitySource: ['$request.header.Authorization']
+      JwtConfiguration:
+        Audience: [!Ref CognitoUserPoolClient]
+        Issuer: !Sub "https://cognito-idp.${AWS::Region}.amazonaws.com/${CognitoUserPool}"
+
+  # Separate SG for VPC Link (outbound to ALB)
+  VpcLinkSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub vpclink-sg-${Environment}
+      GroupDescription: VPC Link outbound to ALB
+      VpcId: !Ref VpcId
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+
+  # VPC Link for ALB integration
+  VpcLink:
+    Type: AWS::ApiGatewayV2::VpcLink
+    Properties:
+      Name: !Sub alb-vpc-link-${Environment}
+      SubnetIds:
+        - !Ref SubnetA
+        - !Ref SubnetB
+      SecurityGroupIds: [!GetAtt VpcLinkSecurityGroup.GroupId]
+
+  # ALB Integration
+  AlbIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref HttpApi
+      IntegrationType: HTTP_PROXY
+      IntegrationUri: !Ref ALBListener
+      IntegrationMethod: ANY
+      ConnectionType: VPC_LINK
+      ConnectionId: !Ref VpcLink
+      PayloadFormatVersion: '1.0'
+
+  # Route: /api/auth/{proxy+} — NO auth (login/register)
+  PublicAuthRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: ANY /api/auth/{proxy+}
+      Target: !Sub integrations/${AlbIntegration}
+
+  # Route: /api/app/{proxy+} — Cognito JWT required
+  ProtectedAppRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: ANY /api/app/{proxy+}
+      AuthorizationType: JWT
+      AuthorizerId: !Ref CognitoAuthorizer
+      Target: !Sub integrations/${AlbIntegration}
+
+  # Route: /api/rbac/{proxy+} — Cognito JWT required
+  ProtectedRbacRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: ANY /api/rbac/{proxy+}
+      AuthorizationType: JWT
+      AuthorizerId: !Ref CognitoAuthorizer
+      Target: !Sub integrations/${AlbIntegration}
+
+  # Stage with throttling (rate limiting)
+  ApiStage:
+    Type: AWS::ApiGatewayV2::Stage
+    DependsOn: ApiGwLogGroup
+    Properties:
+      ApiId: !Ref HttpApi
+      StageName: !Ref Environment
+      AutoDeploy: true
+      DefaultRouteSettings:
+        ThrottlingBurstLimit: 50
+        ThrottlingRateLimit: 100
+      AccessLogSettings:
+        DestinationArn: !GetAtt ApiGwLogGroup.Arn
+        Format: '{"requestId":"$context.requestId","ip":"$context.identity.sourceIp","requestTime":"$context.requestTime","httpMethod":"$context.httpMethod","routeKey":"$context.routeKey","status":"$context.status","protocol":"$context.protocol","responseLength":"$context.responseLength","errorMessage":"$context.error.message"}'
+
+  ApiGwLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/apigateway/rbac-api-${Environment}
+      RetentionInDays: 7
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+# ─────────────────────────────────────────────
+Outputs:
+  ALBDns:
+    Description: ALB DNS (internal routing)
+    Value: !GetAtt ApplicationLoadBalancer.DNSName
+    Export:
+      Name: !Sub ${AWS::StackName}-AlbDns
+
+  ApiGatewayUrl:
+    Description: API Gateway URL (public entry point)
+    Value: !Sub "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}"
+    Export:
+      Name: !Sub ${AWS::StackName}-ApiUrl
+
+  CognitoUserPoolId:
+    Value: !Ref CognitoUserPool
+    Export:
+      Name: !Sub ${AWS::StackName}-UserPoolId
+
+  CognitoClientId:
+    Value: !Ref CognitoUserPoolClient
+    Export:
+      Name: !Sub ${AWS::StackName}-ClientId
+
+  ExpressEC2PublicIp:
+    Value: !GetAtt ExpressEC2.PublicIp
+
+  RoutingRules:
+    Description: Traffic routing summary
+    Value: !Sub |
+      /api/auth/* -> RBAC EC2 (i-0dda96ea16a03281d) port 3000 [NO AUTH]
+      /api/app/*  -> Express EC2 (new) port 3001 [Cognito JWT required]
+      /api/rbac/* -> RBAC EC2 port 3000 [Cognito JWT required]

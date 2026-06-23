@@ -1,0 +1,15 @@
+{
+  "name": "rbac-service",
+  "version": "1.0.0",
+  "description": "RBAC auth service — validates credentials against PostgreSQL, used by Cognito custom auth",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "bcrypt": "^5.1.1",
+    "pg": "^8.11.3",
+    "jsonwebtoken": "^9.0.2"
+  }
+}
