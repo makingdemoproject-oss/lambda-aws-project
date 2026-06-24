@@ -5,12 +5,25 @@ const os      = require('os');
 const app  = express();
 const PORT = process.env.PORT || 3001;
 const HOST = os.hostname();
+const PRIVATE_IP = Object.values(os.networkInterfaces()).flat().find(n => n.family === 'IPv4' && !n.internal)?.address || 'unknown';
 
 app.use(cors({ origin: '*', methods: ['GET','POST','PUT','DELETE','OPTIONS'], allowedHeaders: ['Authorization','Content-Type'] }));
 app.use(express.json());
 
+// Inject EC2 server info into every JSON response
+app.use((req, res, next) => {
+  const _json = res.json.bind(res);
+  res.json = (body) => {
+    if (body && typeof body === 'object' && !Buffer.isBuffer(body)) {
+      body._server = { ec2: 'EC2-1 (express-service-production)', service: 'products-service', host: HOST, privateIp: PRIVATE_IP, port: PORT, path: req.path };
+    }
+    return _json(body);
+  };
+  next();
+});
+
 // Health
-app.get('/health', (req, res) => res.json({ status: 'ok', service: 'products-service', host: HOST, port: PORT }));
+app.get('/health', (req, res) => res.json({ status: 'ok', service: 'products-service', host: HOST, privateIp: PRIVATE_IP, port: PORT }));
 
 // Auth (mock — for Cognito VerifyAuthChallenge Lambda)
 app.post('/api/v1/auth/login', (req, res) => {
