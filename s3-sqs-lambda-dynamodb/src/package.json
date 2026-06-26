@@ -1,0 +1,8 @@
+{
+  "name": "s3-sqs-lambda-dynamodb",
+  "version": "1.0.0",
+  "description": "S3 upload -> SQS -> Lambda -> DynamoDB",
+  "dependencies": {
+    "@aws-sdk/s3-request-presigner": "^3.600.0"
+  }
+}
