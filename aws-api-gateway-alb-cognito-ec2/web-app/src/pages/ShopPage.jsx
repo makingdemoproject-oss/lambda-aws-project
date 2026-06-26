@@ -7,7 +7,7 @@ export default function ShopPage() {
   const { user, logout, can } = useAuth();
   const [data, setData] = useState({ rows: [], count: 0 });
   const [q, setQ] = useState('');
-  useEffect(() => { ecom.products.list({ q, limit: 24 }).then(setData).catch(() => {}); }, [q]);
+  useEffect(() => { ecom.products.list({ q, limit: 24 }).then(d => setData(d || { rows: [], count: 0 })).catch(() => {}); }, [q]);
 
   const add = async (id) => { try { await ecom.cart.add({ productId: id, quantity: 1 }); alert('Added'); } catch (e) { alert(e.response?.data?.message); } };
 
