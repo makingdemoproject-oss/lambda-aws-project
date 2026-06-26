@@ -33,6 +33,14 @@ export default function ShopPage() {
           </>)}
         </nav>
       </header>
+      <div style={{ display:'flex', gap:12, padding:'12px 16px', background:'#1e293b', borderBottom:'1px solid #334155' }}>
+        <Link to="/aws-demo" style={{ flex:1, display:'block', background:'#4f46e5', color:'#fff', textAlign:'center', padding:'12px', borderRadius:8, textDecoration:'none', fontWeight:600, fontSize:14 }}>
+          Lambda Authorizer + RDS Demo
+        </Link>
+        <Link to="/s3-demo" style={{ flex:1, display:'block', background:'#0ea5e9', color:'#fff', textAlign:'center', padding:'12px', borderRadius:8, textDecoration:'none', fontWeight:600, fontSize:14 }}>
+          S3 → SQS → Lambda → DynamoDB
+        </Link>
+      </div>
       <main className="grid">
         {(data.rows || []).map((p) => (
           <div key={p.id} className="card">
