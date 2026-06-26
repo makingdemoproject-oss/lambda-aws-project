@@ -22,8 +22,12 @@ export default function ShopPage() {
             <Link to="/orders">Orders</Link>
             {can('chat:use') && <Link to="/chat">Messages</Link>}
             {can('product:read') && <Link to="/admin">Admin</Link>}
+            <Link to="/aws-demo">AWS Demo</Link>
+            <Link to="/s3-demo">S3 Demo</Link>
             <button className="link" onClick={logout}>Logout ({user.firstName || user.email})</button>
           </>) : (<>
+            <Link to="/aws-demo">AWS Demo</Link>
+            <Link to="/s3-demo">S3 Demo</Link>
             <Link to="/login">Sign in</Link>
             <Link to="/register">Register</Link>
           </>)}
