@@ -1,0 +1,55 @@
+{
+  "common": {
+    "loading": "Loading…",
+    "save": "Save",
+    "cancel": "Cancel",
+    "delete": "Delete",
+    "edit": "Edit",
+    "search": "Search",
+    "filter": "Filter",
+    "reset": "Reset",
+    "yes": "Yes",
+    "no": "No",
+    "actions": "Actions"
+  },
+  "auth": {
+    "login": "Log in",
+    "logout": "Log out",
+    "register": "Sign up",
+    "email": "Email",
+    "password": "Password",
+    "name": "Name",
+    "forgot": "Forgot password?",
+    "noAccount": "No account?",
+    "haveAccount": "Already have an account?"
+  },
+  "nav": {
+    "shop": "Shop",
+    "cart": "Cart",
+    "orders": "Orders",
+    "chat": "Chat",
+    "rides": "Rides",
+    "driver": "Driver",
+    "aiChat": "AI Chat",
+    "aiAgent": "AI Agent",
+    "hotels": "Hotels",
+    "myHotelBookings": "My hotel bookings",
+    "learn": "Coding Sikho",
+    "learnDashboard": "My learning",
+    "admin": "Admin",
+    "language": "Language"
+  },
+  "ride": {
+    "estimate": "Estimate fare",
+    "book": "Book ride",
+    "cancel": "Cancel ride",
+    "yourLocation": "Your location",
+    "destination": "Destination",
+    "online": "Online — looking for rides",
+    "offline": "Offline"
+  },
+  "errors": {
+    "noPermission": "You don't have permission to view this page.",
+    "generic": "Something went wrong. Please try again."
+  }
+}
