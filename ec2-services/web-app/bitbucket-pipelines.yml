@@ -1,0 +1,43 @@
+image: node:20-alpine
+
+definitions:
+  caches:
+    node-modules: node_modules
+  steps:
+    - step: &test
+        caches: [node-modules]
+        script: [apk add --no-cache git, npm ci, npm run build]
+
+    - step: &build-and-push
+        services: [docker]
+        script:
+          - apk add --no-cache aws-cli docker
+          - export TAG=${BITBUCKET_COMMIT:0:7}
+          - aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REGISTRY
+          - docker build -t $ECR_REGISTRY/web-app:$TAG -t $ECR_REGISTRY/web-app:latest .
+          - docker push $ECR_REGISTRY/web-app:$TAG && docker push $ECR_REGISTRY/web-app:latest
+          - echo "$TAG" > image-tag.txt
+        artifacts: [image-tag.txt]
+
+    - step: &deploy
+        deployment: production
+        script:
+          - apk add --no-cache aws-cli curl bash
+          - curl -sL https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl -o /usr/local/bin/kubectl
+          - chmod +x /usr/local/bin/kubectl
+          - export TAG=$(cat image-tag.txt)
+          - aws eks update-kubeconfig --name $EKS_CLUSTER --region $AWS_REGION
+          - find k8s -type f -name '*.yaml' -exec sed -i "s|REGISTRY|$ECR_REGISTRY|g; s|GIT_SHA|$TAG|g" {} +
+          - kubectl create namespace $K8S_NAMESPACE --dry-run=client -o yaml | kubectl apply -f -
+          - kubectl apply -f k8s/deployment.yaml
+          - kubectl rollout status deployment/web -n $K8S_NAMESPACE --timeout=300s
+
+pipelines:
+  pull-requests:
+    '**':
+      - step: *test
+  branches:
+    main:
+      - step: *test
+      - step: *build-and-push
+      - step: *deploy
