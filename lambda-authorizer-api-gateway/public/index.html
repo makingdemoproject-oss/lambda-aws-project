@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Lambda Authorizer Demo</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #060b18; color: #e2e8f0; font-family: 'Segoe UI', sans-serif; font-size: 14px; }
+
+    header { background: #0f172a; padding: 12px 24px; border-bottom: 2px solid #1e293b; display: flex; align-items: center; gap: 16px; }
+    header h1 { color: #a78bfa; font-size: 16px; font-weight: 800; }
+    header span { color: #475569; font-size: 12px; }
+    .api-badge { margin-left: auto; background: #1e293b; color: #60a5fa; padding: 3px 10px; border-radius: 4px; font-size: 11px; font-family: monospace; }
+
+    .layout { display: grid; grid-template-columns: 340px 1fr; height: calc(100vh - 52px); }
+
+    /* LEFT */
+    .left { padding: 14px; overflow-y: auto; border-right: 1px solid #1e293b; background: #0a0f1e; display: flex; flex-direction: column; gap: 10px; }
+
+    .card { background: #0f1629; border-radius: 8px; padding: 12px; }
+    .card.purple { border: 1px solid #4c1d9544; }
+    .card.teal   { border: 1px solid #0d948844; }
+    .card-title { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 10px; }
+    .card.purple .card-title { color: #a78bfa; }
+    .card.teal   .card-title { color: #2dd4bf; }
+
+    /* Flow box */
+    .flow-box { background: #020816; border: 1px solid #1e293b; border-radius: 6px; padding: 10px; font-family: monospace; font-size: 11px; line-height: 1.9; margin-bottom: 10px; }
+    .flow-box .step { display: inline-block; padding: 1px 7px; border-radius: 3px; font-weight: 600; }
+    .step-browser  { background: #0c1f3f; color: #60a5fa; }
+    .step-gw       { background: #1c1100; color: #fbbf24; }
+    .step-auth     { background: #2e1065; color: #c4b5fd; }
+    .step-fn       { background: #052e16; color: #4ade80; }
+    .step-rds      { background: #083344; color: #67e8f9; }
+    .step-arrow    { color: #475569; margin: 0 3px; }
+
+    input { width: 100%; padding: 7px 9px; background: #060b18; border: 1px solid #1e293b; border-radius: 4px; color: #e2e8f0; font-size: 12px; margin-bottom: 5px; outline: none; }
+    input:focus { border-color: #4c1d95; }
+    button.primary { width: 100%; padding: 8px 0; border: none; border-radius: 5px; font-weight: 700; font-size: 12px; cursor: pointer; margin-bottom: 4px; }
+    button.purple-btn { background: #6d28d9; color: #fff; }
+    button.purple-btn:hover { background: #7c3aed; }
+
+    .status-dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; margin-right: 5px; }
+    .dot-idle    { background: #475569; }
+    .dot-loading { background: #f59e0b; }
+    .dot-ok      { background: #22c55e; }
+    .dot-err     { background: #ef4444; }
+
+    .route-row { display: flex; align-items: center; gap: 4px; margin-bottom: 4px; }
+    .route-btn { flex: 1; display: flex; align-items: center; gap: 6px; padding: 6px 8px; border-radius: 4px; cursor: pointer; font-size: 12px; font-family: monospace; }
+    .route-btn.public    { background: #052e16; border: 1px solid #15803d; color: #4ade80; }
+    .route-btn.protected { background: #1a0b2e; border: 1px solid #7c3aed; color: #c4b5fd; }
+    .route-btn:hover { opacity: 0.85; }
+    .method-tag { font-size: 10px; color: #475569; min-width: 30px; }
+    .auth-tag { font-size: 10px; padding: 1px 5px; border-radius: 3px; font-family: sans-serif; font-weight: 700; flex-shrink: 0; }
+    .tag-public    { background: #052e16; color: #4ade80; border: 1px solid #15803d; }
+    .tag-protected { background: #2e1065; color: #c4b5fd; border: 1px solid #7c3aed; }
+
+    .info-btn { width: 22px; height: 22px; border-radius: 50%; background: #1e293b; border: 1px solid #334155; color: #64748b; cursor: pointer; font-size: 11px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
+    .info-btn:hover { color: #a78bfa; border-color: #7c3aed; }
+
+    .pincode-form { background: #060b18; border: 1px solid #1e293b; border-radius: 5px; padding: 8px; margin-top: 6px; }
+    .pincode-form .row { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 4px; }
+
+    /* RIGHT */
+    .right { display: flex; flex-direction: column; overflow: hidden; }
+    .log-header { padding: 8px 16px; background: #080e1f; border-bottom: 1px solid #1e293b; display: flex; align-items: center; gap: 8px; font-size: 12px; }
+    .log-header strong { color: #e2e8f0; }
+    .log-area { flex: 1; overflow-y: auto; padding: 10px 16px; background: #020816; font-family: monospace; font-size: 12px; }
+    .log-empty { color: #1e293b; text-align: center; margin-top: 40px; font-size: 14px; }
+
+    .log-item { margin-bottom: 8px; border-radius: 5px; overflow: hidden; }
+    .log-bar { display: flex; align-items: center; gap: 8px; padding: 5px 10px; }
+    .log-bar.ok  { background: #070d1f; border-left: 3px solid #a78bfa; }
+    .log-bar.err { background: #1a0505; border-left: 3px solid #ef4444; }
+    .log-src { padding: 1px 7px; border-radius: 3px; font-size: 11px; font-weight: 700; background: #2e106544; color: #c4b5fd; white-space: nowrap; }
+    .log-status { font-weight: 700; }
+    .log-path { color: #94a3b8; flex: 1; font-size: 11px; }
+    .log-ts { color: #334155; font-size: 10px; }
+    .log-body { background: #040810; border: 1px solid #1e293b; border-top: 0; border-radius: 0 0 5px 5px; padding: 6px 10px; max-height: 140px; overflow-y: auto; color: #7dd3fc; font-size: 11px; white-space: pre-wrap; }
+
+    /* Modal */
+    .modal-overlay { position: fixed; inset: 0; background: #000000bb; z-index: 50; display: flex; align-items: center; justify-content: center; }
+    .modal { background: #0f1629; border: 1px solid #1e293b; border-radius: 10px; padding: 20px; max-width: 640px; width: 92%; max-height: 85vh; overflow-y: auto; }
+    .modal h3 { color: #a78bfa; font-size: 14px; margin-bottom: 12px; }
+    .code-block { background: #020816; border: 1px solid #1e293b; border-radius: 6px; padding: 12px; font-family: monospace; font-size: 11px; color: #7dd3fc; white-space: pre-wrap; overflow-x: auto; margin-top: 8px; line-height: 1.5; }
+    .modal-close { float: right; background: none; border: none; color: #64748b; cursor: pointer; font-size: 20px; line-height: 1; }
+
+    .tag-count { background: #2e106544; color: #c4b5fd; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 700; }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>Lambda Authorizer Demo</h1>
+  <span>Express server mirroring AWS Lambda Authorizer + API Gateway</span>
+  <span class="api-badge" id="apiBase">http://localhost:3005</span>
+</header>
+
+<div class="layout">
+  <!-- LEFT -->
+  <div class="left">
+
+    <!-- Architecture -->
+    <div class="card purple">
+      <div class="card-title">Request Flow</div>
+      <div class="flow-box">
+        <span class="step step-browser">Browser</span>
+        <span class="step-arrow">→</span>
+        <span class="step step-gw">Express</span>
+        <span class="step-arrow">→</span>
+        <span class="step step-auth">lambdaAuthorizer</span>
+        <span class="step-arrow">→</span>
+        <span class="step step-fn">Route Handler</span>
+        <span class="step-arrow">→</span>
+        <span class="step step-rds">RDS</span>
+        <br/>
+        <span style="color:#334155; font-size:10px; padding-left: 4px;">
+          AWS: Browser → API Gateway → Lambda Authorizer → Lambda fn → RDS
+        </span>
+      </div>
+    </div>
+
+    <!-- Auth -->
+    <div class="card purple">
+      <div class="card-title">
+        Login
+        <span id="loginStatus" style="float:right; font-size:11px; font-weight:400; color:#475569">
+          <span class="status-dot dot-idle"></span>not logged in
+        </span>
+      </div>
+      <input id="email" value="test@lambda.com" placeholder="Email" />
+      <input id="password" type="password" value="Test@12345" placeholder="Password" />
+      <button class="primary purple-btn" onclick="doLogin()">Login</button>
+      <button class="primary" style="background:#1e293b; color:#94a3b8" onclick="doRegister()">Register (new user)</button>
+      <div id="tokenPreview" style="font-size:10px; color:#334155; margin-top:4px; font-family:monospace; word-break:break-all;"></div>
+    </div>
+
+    <!-- Routes -->
+    <div class="card purple">
+      <div class="card-title">Routes</div>
+
+      <!-- Public -->
+      <div style="color:#475569; font-size:10px; margin-bottom:5px; text-transform:uppercase; letter-spacing:1px;">Public (no auth)</div>
+      <div class="route-row">
+        <button class="route-btn public" onclick="call('GET','/health')">
+          <span class="method-tag">GET</span>/health
+          <span class="auth-tag tag-public" style="margin-left:auto">public</span>
+        </button>
+        <button class="info-btn" onclick="showInfo('health')">?</button>
+      </div>
+
+      <!-- Protected -->
+      <div style="color:#475569; font-size:10px; margin: 8px 0 5px; text-transform:uppercase; letter-spacing:1px;">Protected (lambdaAuthorizer)</div>
+      <div class="route-row">
+        <button class="route-btn protected" onclick="call('GET','/auth/me')">
+          <span class="method-tag">GET</span>/auth/me
+          <span class="auth-tag tag-protected" style="margin-left:auto">protected</span>
+        </button>
+        <button class="info-btn" onclick="showInfo('me')">?</button>
+      </div>
+      <div class="route-row">
+        <button class="route-btn protected" onclick="call('GET','/pincodes')">
+          <span class="method-tag">GET</span>/pincodes
+          <span class="auth-tag tag-protected" style="margin-left:auto">protected</span>
+        </button>
+        <button class="info-btn" onclick="showInfo('pincodes')">?</button>
+      </div>
+      <div class="route-row">
+        <button class="route-btn protected" onclick="addPincode()">
+          <span class="method-tag">POST</span>/pincodes
+          <span class="auth-tag tag-protected" style="margin-left:auto">protected</span>
+        </button>
+        <button class="info-btn" onclick="showInfo('add-pincode')">?</button>
+      </div>
+
+      <!-- Pincode form -->
+      <div class="pincode-form">
+        <div style="color:#475569; font-size:10px; margin-bottom:5px;">POST /pincodes body:</div>
+        <div class="row">
+          <input id="pc-pincode" placeholder="110001" style="margin:0" />
+          <input id="pc-city"    placeholder="New Delhi" style="margin:0" />
+          <input id="pc-state"   placeholder="Delhi" style="margin:0" />
+        </div>
+      </div>
+    </div>
+
+    <!-- Run all / clear -->
+    <button class="primary purple-btn" onclick="runAll()">Run All Routes</button>
+    <div style="display:flex; gap:6px;">
+      <button class="primary" style="background:#0c1f3f; border:1px solid #1d4ed8; color:#60a5fa" onclick="downloadJson()">Download JSON</button>
+      <button class="primary" style="background:#1e293b; color:#64748b; border:1px solid #334155" onclick="clearLogs()">Clear</button>
+    </div>
+  </div>
+
+  <!-- RIGHT -->
+  <div class="right">
+    <div class="log-header">
+      <strong>Response Log</strong>
+      <span id="logCount" class="tag-count" style="display:none">0 requests</span>
+      <span style="margin-left:auto; color:#334155; font-size:11px" id="apiUrl"></span>
+    </div>
+    <div class="log-area" id="logArea">
+      <div class="log-empty">Route button click karo — response yahan dikhega</div>
+    </div>
+  </div>
+</div>
+
+<!-- Info Modal -->
+<div class="modal-overlay" id="modal" style="display:none" onclick="closeModal()">
+  <div class="modal" onclick="event.stopPropagation()">
+    <button class="modal-close" onclick="closeModal()">×</button>
+    <h3 id="modalTitle"></h3>
+    <div id="modalBody"></div>
+  </div>
+</div>
+
+<script>
+  const BASE = window.location.origin;
+  document.getElementById('apiBase').textContent = BASE;
+  document.getElementById('apiUrl').textContent = BASE;
+
+  let jwt = '';
+  let logs = [];
+
+  /* ── Auth ── */
+  async function doLogin() {
+    const email = document.getElementById('email').value;
+    const password = document.getElementById('password').value;
+    setLoginStatus('loading', 'Logging in...');
+    try {
+      const r = await fetch(BASE + '/auth/login', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ email, password })
+      });
+      const d = await r.json();
+      if (!d.data?.accessToken) throw new Error(d.message || 'Login failed');
+      jwt = d.data.accessToken;
+      setLoginStatus('ok', 'Logged in as ' + email);
+      document.getElementById('tokenPreview').textContent = 'JWT: ' + jwt.slice(0,30) + '...';
+      addLog('POST /auth/login', r.status, d);
+    } catch(e) {
+      setLoginStatus('err', e.message);
+      addLog('POST /auth/login', 'ERR', { error: e.message });
+    }
+  }
+
+  async function doRegister() {
+    const email = document.getElementById('email').value;
+    const password = document.getElementById('password').value;
+    try {
+      const r = await fetch(BASE + '/auth/register', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ email, password, name: email.split('@')[0] })
+      });
+      const d = await r.json();
+      if (d.data?.accessToken) { jwt = d.data.accessToken; setLoginStatus('ok', 'Registered + logged in'); }
+      addLog('POST /auth/register', r.status, d);
+    } catch(e) {
+      addLog('POST /auth/register', 'ERR', { error: e.message });
+    }
+  }
+
+  /* ── Generic call ── */
+  async function call(method, path, body) {
+    const headers = { 'Content-Type': 'application/json' };
+    if (jwt) headers['Authorization'] = 'Bearer ' + jwt;
+    try {
+      const r = await fetch(BASE + path, { method, headers, body: body ? JSON.stringify(body) : undefined });
+      const d = await r.json();
+      addLog(method + ' ' + path, r.status, d);
+    } catch(e) {
+      addLog(method + ' ' + path, 'ERR', { error: e.message });
+    }
+  }
+
+  async function addPincode() {
+    const pincode = document.getElementById('pc-pincode').value || '110001';
+    const city    = document.getElementById('pc-city').value || 'New Delhi';
+    const state   = document.getElementById('pc-state').value || 'Delhi';
+    await call('POST', '/pincodes', { pincode, city, state });
+  }
+
+  async function runAll() {
+    await call('GET', '/health');
+    if (jwt) {
+      await call('GET', '/auth/me');
+      await call('GET', '/pincodes');
+      await addPincode();
+    } else {
+      alert('Pehle login karo to run protected routes');
+      await call('GET', '/health');
+    }
+  }
+
+  /* ── Logs ── */
+  function addLog(path, status, data) {
+    const isOk = typeof status === 'number' && status >= 200 && status < 300;
+    logs.push({ path, status, data, ts: new Date().toLocaleTimeString() });
+
+    const area = document.getElementById('logArea');
+    if (logs.length === 1) area.innerHTML = '';
+
+    const item = document.createElement('div');
+    item.className = 'log-item';
+    item.innerHTML = `
+      <div class="log-bar ${isOk ? 'ok' : 'err'}">
+        <span class="log-src">LAMBDA-AUTH</span>
+        <span class="log-status" style="color:${isOk ? '#22c55e' : '#ef4444'}">${status}</span>
+        <span class="log-path">${path}</span>
+        <span class="log-ts">${logs[logs.length-1].ts}</span>
+      </div>
+      <div class="log-body">${JSON.stringify(data, null, 2)}</div>`;
+    area.insertBefore(item, area.firstChild);
+
+    const cnt = document.getElementById('logCount');
+    cnt.style.display = 'inline';
+    cnt.textContent = logs.length + ' request' + (logs.length > 1 ? 's' : '');
+  }
+
+  function clearLogs() {
+    logs = [];
+    document.getElementById('logArea').innerHTML = '<div class="log-empty">Route button click karo — response yahan dikhega</div>';
+    document.getElementById('logCount').style.display = 'none';
+  }
+
+  function downloadJson() {
+    const blob = new Blob([JSON.stringify({ generatedAt: new Date().toISOString(), data: logs }, null, 2)], { type: 'application/json' });
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+    a.download = 'lambda-auth-demo.json'; a.click();
+  }
+
+  /* ── Login status ── */
+  function setLoginStatus(state, msg) {
+    const el = document.getElementById('loginStatus');
+    const colors = { idle: '#475569', loading: '#f59e0b', ok: '#22c55e', err: '#ef4444' };
+    el.innerHTML = `<span class="status-dot" style="background:${colors[state]}"></span>${msg}`;
+  }
+
+  /* ── Info modal ── */
+  const INFO = {
+    health: {
+      title: 'GET /health — Public route',
+      body: `<b>Flow:</b> Browser → Express → Route Handler → RDS (SELECT 1)<br><br>
+<b>AWS equivalent:</b> Browser → API GW → Lambda fn (no authorizer)<br><br>
+<div class="code-block">app.get('/health', async (req, res) => {
+  await pool.query('SELECT 1'); // ping RDS
+  res.json({ success: true, db: 'ok' });
+});</div>`
+    },
+    me: {
+      title: 'GET /auth/me — Protected by lambdaAuthorizer',
+      body: `<b>Flow:</b> Browser → Express → <b style="color:#c4b5fd">lambdaAuthorizer</b> → Route → RDS<br><br>
+<b>AWS equivalent:</b> Browser → API GW → <b style="color:#c4b5fd">Lambda Authorizer</b> → Lambda fn → RDS<br><br>
+<div class="code-block">// middleware/lambdaAuthorizer.js
+const lambdaAuthorizer = (req, res, next) => {
+  const token = req.headers['authorization']?.replace(/^Bearer /i, '');
+  const decoded = jwt.verify(token, process.env.JWT_SECRET);
+  req.lambdaContext = { userId: decoded.userId, email: decoded.email };
+  next(); // isAuthorized: true
+};
+
+// routes/auth.js
+router.get('/me', lambdaAuthorizer, async (req, res) => {
+  const { userId } = req.lambdaContext; // injected by authorizer
+  const result = await pool.query(
+    'SELECT * FROM lambda_users WHERE id = $1', [userId]
+  );
+  res.json({ success: true, data: result.rows[0] });
+});</div>`
+    },
+    pincodes: {
+      title: 'GET /pincodes — Protected by lambdaAuthorizer',
+      body: `<b>Flow:</b> Browser → Express → <b style="color:#c4b5fd">lambdaAuthorizer</b> → Route → RDS<br><br>
+<div class="code-block">router.get('/', lambdaAuthorizer, async (req, res) => {
+  const { userId } = req.lambdaContext;
+  const result = await pool.query(
+    \`SELECT p.*, u.email AS created_by_email
+     FROM pincodes p
+     LEFT JOIN lambda_users u ON u.id = p.created_by
+     ORDER BY p.created_at DESC\`
+  );
+  res.json({ success: true, authorizedUser: userId, data: result.rows });
+});</div>`
+    },
+    'add-pincode': {
+      title: 'POST /pincodes — Protected by lambdaAuthorizer',
+      body: `<b>Flow:</b> Browser → Express → <b style="color:#c4b5fd">lambdaAuthorizer</b> → Route → RDS INSERT<br><br>
+<div class="code-block">router.post('/', lambdaAuthorizer, async (req, res) => {
+  const { userId } = req.lambdaContext; // who is adding this
+  const { pincode, city, state } = req.body;
+  const result = await pool.query(
+    'INSERT INTO pincodes(pincode,city,state,created_by) VALUES($1,$2,$3,$4) RETURNING *',
+    [pincode, city, state, userId]
+  );
+  res.status(201).json({ success: true, data: result.rows[0] });
+});</div>`
+    }
+  };
+
+  function showInfo(key) {
+    const info = INFO[key];
+    if (!info) return;
+    document.getElementById('modalTitle').textContent = info.title;
+    document.getElementById('modalBody').innerHTML = info.body;
+    document.getElementById('modal').style.display = 'flex';
+  }
+  function closeModal() { document.getElementById('modal').style.display = 'none'; }
+</script>
+</body>
+</html>

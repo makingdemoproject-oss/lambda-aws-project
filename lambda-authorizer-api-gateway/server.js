@@ -29,6 +29,7 @@ const PORT = process.env.PORT || 3005;
 
 app.use(cors());
 app.use(express.json());
+app.use(express.static('public'));
 
 // GET /health — public, tests RDS connectivity
 app.get('/health', async (req, res) => {
