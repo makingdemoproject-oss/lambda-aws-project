@@ -40,6 +40,13 @@ Resources:
       QueueName: ec2-events-queue-production
       VisibilityTimeout: 60
 
+  # ── SQS for ECS ───────────────────────────────────────
+  EcsQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: ec2-events-ecs-queue-production
+      VisibilityTimeout: 60
+
   # ── SNS ───────────────────────────────────────────────
   EventsTopic:
     Type: AWS::SNS::Topic
@@ -111,6 +118,12 @@ Resources:
               - Effect: Allow
                 Action: [logs:CreateLogStream, logs:PutLogEvents]
                 Resource: '*'
+              - Effect: Allow
+                Action: [dynamodb:PutItem, dynamodb:Scan, dynamodb:GetItem]
+                Resource: !GetAtt EventsTable.Arn
+              - Effect: Allow
+                Action: [sqs:ReceiveMessage, sqs:DeleteMessage, sqs:GetQueueAttributes]
+                Resource: !GetAtt EcsQueue.Arn
 
   # ── ECS Task Definition ───────────────────────────────
   EcsLogGroup:
@@ -139,6 +152,12 @@ Resources:
               Value: '8080'
             - Name: ECS_TASK_ID
               Value: fargate-task
+            - Name: ECS_QUEUE_URL
+              Value: !Ref EcsQueue
+            - Name: EVENTS_TABLE
+              Value: !Ref EventsTable
+            - Name: AWS_REGION
+              Value: !Ref AWS::Region
           LogConfiguration:
             LogDriver: awslogs
             Options:
@@ -318,7 +337,9 @@ Resources:
                 Resource: !GetAtt EventHandlerFn.Arn
               - Effect: Allow
                 Action: [sqs:SendMessage]
-                Resource: !GetAtt EventsQueue.Arn
+                Resource:
+                  - !GetAtt EventsQueue.Arn
+                  - !GetAtt EcsQueue.Arn
               - Effect: Allow
                 Action: [sns:Publish]
                 Resource: !Ref EventsTopic
@@ -339,6 +360,9 @@ Resources:
           RoleArn: !GetAtt EventBridgeRole.Arn
         - Id: SnsTarget
           Arn: !Ref EventsTopic
+          RoleArn: !GetAtt EventBridgeRole.Arn
+        - Id: EcsQueueTarget
+          Arn: !GetAtt EcsQueue.Arn
           RoleArn: !GetAtt EventBridgeRole.Arn
 
   EventHandlerPermission:
