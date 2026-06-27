@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 
-const DEFAULT_API = localStorage.getItem('ebApi') || 'https://YOUR_API_ID.execute-api.ap-south-1.amazonaws.com/prod';
+const DEFAULT_API = localStorage.getItem('ebApi') || 'https://glld8xowg5.execute-api.ap-south-1.amazonaws.com/prod';
 
 const EVENT_TYPES = ['OrderCreated', 'PaymentSuccess', 'UserRegistered', 'InventoryLow', 'OrderShipped'];
 const PRODUCTS    = ['Laptop Pro', 'Smartphone X12', 'Smart Watch', 'Headphones', 'Tablet Air'];
