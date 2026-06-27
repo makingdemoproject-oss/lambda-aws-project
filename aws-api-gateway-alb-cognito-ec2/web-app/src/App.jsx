@@ -32,6 +32,7 @@ import RequirePerm from './components/RequirePerm.jsx';
 import useBootstrap from './hooks/useBootstrap.js';
 import AwsDemoPage from './pages/AwsDemoPage.jsx';
 import S3DemoPage from './pages/S3DemoPage.jsx';
+import EventBridgePage from './pages/EventBridgePage.jsx';
 
 export default function App() {
   const { ready } = useBootstrap();
@@ -77,6 +78,7 @@ export default function App() {
 
       <Route path="/aws-demo" element={<AwsDemoPage />} />
       <Route path="/s3-demo" element={<S3DemoPage />} />
+      <Route path="/eventbridge" element={<EventBridgePage />} />
 
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

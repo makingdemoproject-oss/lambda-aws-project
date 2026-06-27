@@ -40,6 +40,9 @@ export default function ShopPage() {
         <Link to="/s3-demo" style={{ flex:1, display:'block', background:'#0ea5e9', color:'#fff', textAlign:'center', padding:'12px', borderRadius:8, textDecoration:'none', fontWeight:600, fontSize:14 }}>
           S3 → SQS → Lambda → DynamoDB
         </Link>
+        <Link to="/eventbridge" style={{ flex:1, display:'block', background:'#7c3aed', color:'#fff', textAlign:'center', padding:'12px', borderRadius:8, textDecoration:'none', fontWeight:600, fontSize:14 }}>
+          EventBridge → Lambda / SQS / SNS / ECS
+        </Link>
       </div>
       <main className="grid">
         {(data.rows || []).map((p) => (
