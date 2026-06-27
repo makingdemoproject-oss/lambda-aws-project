@@ -195,7 +195,7 @@ Resources:
     Type: AWS::Lambda::Function
     Properties:
       FunctionName: eb-ecs-health-production
-      Runtime: nodejs18.x
+      Runtime: nodejs22.x
       Handler: health.handler
       Role: !GetAtt LambdaRole.Arn
       Code: { S3Bucket: !Ref CodeBucket, S3Key: !Ref CodeKey }
@@ -208,7 +208,7 @@ Resources:
     Type: AWS::Lambda::Function
     Properties:
       FunctionName: eb-ecs-publish-event-production
-      Runtime: nodejs18.x
+      Runtime: nodejs22.x
       Handler: publishEvent.handler
       Role: !GetAtt LambdaRole.Arn
       Timeout: 30
@@ -222,7 +222,7 @@ Resources:
     Type: AWS::Lambda::Function
     Properties:
       FunctionName: eb-ecs-event-handler-production
-      Runtime: nodejs18.x
+      Runtime: nodejs22.x
       Handler: eventHandler.handler
       Role: !GetAtt LambdaRole.Arn
       Timeout: 30
@@ -236,7 +236,7 @@ Resources:
     Type: AWS::Lambda::Function
     Properties:
       FunctionName: eb-ecs-sqs-consumer-production
-      Runtime: nodejs18.x
+      Runtime: nodejs22.x
       Handler: sqsConsumer.handler
       Role: !GetAtt LambdaRole.Arn
       Timeout: 60
@@ -254,11 +254,41 @@ Resources:
       BatchSize: 5
       FunctionResponseTypes: [ReportBatchItemFailures]
 
+  # SNS → Lambda → DynamoDB
+  SnsConsumerFn:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: eb-ecs-sns-consumer-production
+      Runtime: nodejs22.x
+      Handler: snsConsumer.handler
+      Role: !GetAtt LambdaRole.Arn
+      Timeout: 30
+      Code: { S3Bucket: !Ref CodeBucket, S3Key: !Ref CodeKey }
+      Environment:
+        Variables:
+          EVENTS_TABLE: !Ref EventsTable
+          EVENT_BUS_NAME: !Ref EventBus
+
+  SnsSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref EventsTopic
+      Protocol: lambda
+      Endpoint: !GetAtt SnsConsumerFn.Arn
+
+  SnsConsumerPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref SnsConsumerFn
+      Action: lambda:InvokeFunction
+      Principal: sns.amazonaws.com
+      SourceArn: !Ref EventsTopic
+
   GetEventsFn:
     Type: AWS::Lambda::Function
     Properties:
       FunctionName: eb-ecs-get-events-production
-      Runtime: nodejs18.x
+      Runtime: nodejs22.x
       Handler: getEvents.handler
       Role: !GetAtt LambdaRole.Arn
       Code: { S3Bucket: !Ref CodeBucket, S3Key: !Ref CodeKey }
