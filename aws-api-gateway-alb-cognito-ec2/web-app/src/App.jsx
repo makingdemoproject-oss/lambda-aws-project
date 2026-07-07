@@ -33,6 +33,14 @@ import useBootstrap from './hooks/useBootstrap.js';
 import AwsDemoPage from './pages/AwsDemoPage.jsx';
 import S3DemoPage from './pages/S3DemoPage.jsx';
 import EventBridgePage from './pages/EventBridgePage.jsx';
+import StepFunctionPage from './pages/StepFunctionPage.jsx';
+import ApiGatewayPage from './pages/ApiGatewayPage.jsx';
+import KubernetesPage from './pages/KubernetesPage.jsx';
+import Route53Page from './pages/Route53Page.jsx';
+import EcrEksPage from './pages/EcrEksPage.jsx';
+import NotificationsPage from './pages/NotificationsPage.jsx';
+import VpcPage from './pages/VpcPage.jsx';
+import PostgreSQLPage from './pages/PostgreSQLPage.jsx';
 
 export default function App() {
   const { ready } = useBootstrap();
@@ -79,6 +87,14 @@ export default function App() {
       <Route path="/aws-demo" element={<AwsDemoPage />} />
       <Route path="/s3-demo" element={<S3DemoPage />} />
       <Route path="/eventbridge" element={<EventBridgePage />} />
+      <Route path="/step-functions" element={<StepFunctionPage />} />
+      <Route path="/api-gateway" element={<ApiGatewayPage />} />
+      <Route path="/kubernetes" element={<KubernetesPage />} />
+      <Route path="/route53"    element={<Route53Page />} />
+      <Route path="/ecr-eks"    element={<EcrEksPage />} />
+      <Route path="/notifications" element={<NotificationsPage />} />
+      <Route path="/vpc"           element={<VpcPage />} />
+      <Route path="/postgresql"    element={<PostgreSQLPage />} />
 
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
