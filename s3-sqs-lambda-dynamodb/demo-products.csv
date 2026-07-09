@@ -1,0 +1,11 @@
+id,name,category,price,stock,city
+1,Laptop Pro 15,Electronics,75000,50,Delhi
+2,Smartphone X12,Electronics,25000,120,Mumbai
+3,Wireless Headphones,Electronics,3500,200,Bangalore
+4,Smart Watch Series 5,Electronics,15000,60,Chennai
+5,Tablet Air 10,Electronics,20000,80,Hyderabad
+6,Cotton T-Shirt,Clothing,499,500,Delhi
+7,Denim Jeans,Clothing,1299,300,Mumbai
+8,Running Shoes,Footwear,2999,150,Bangalore
+9,Backpack Pro,Accessories,1999,100,Delhi
+10,Sunglasses UV400,Accessories,899,250,Chennai
