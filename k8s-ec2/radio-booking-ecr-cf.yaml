@@ -1,0 +1,53 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: ECR Repository for radio-booking-api + ECR policy on k8s EC2 role
+
+Resources:
+
+  # ─── ECR REPOSITORY ───────────────────────────────────────────────────────────
+  RadioBookingRepo:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: radio-booking-api
+      ImageScanningConfiguration:
+        ScanOnPush: false
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {
+            "rules": [{
+              "rulePriority": 1,
+              "description": "Keep only last 3 images",
+              "selection": { "tagStatus": "any", "countType": "imageCountMoreThan", "countNumber": 3 },
+              "action": { "type": "expire" }
+            }]
+          }
+
+  # ─── ADD ECR PERMISSIONS TO EXISTING k8s EC2 ROLE ────────────────────────────
+  ECRPullPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: k8s-ecr-pull-push-policy
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - ecr:GetAuthorizationToken
+              - ecr:BatchCheckLayerAvailability
+              - ecr:GetDownloadUrlForLayer
+              - ecr:BatchGetImage
+              - ecr:PutImage
+              - ecr:InitiateLayerUpload
+              - ecr:UploadLayerPart
+              - ecr:CompleteLayerUpload
+            Resource: "*"
+      Roles:
+        - k8s-ec2-ssm-role
+
+Outputs:
+  RepositoryUri:
+    Value: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/radio-booking-api"
+    Description: ECR Image URI
+
+  LoginCommand:
+    Value: !Sub "aws ecr get-login-password --region ${AWS::Region} | docker login --username AWS --password-stdin ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com"
+    Description: Docker login command for ECR

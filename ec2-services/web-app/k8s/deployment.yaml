@@ -1,0 +1,82 @@
+apiVersion: v1
+kind: Service
+metadata: { name: web, namespace: platform, labels: { app: web } }
+spec:
+  selector: { app: web }
+  ports: [{ port: 80, targetPort: 80, name: http }]
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: web, namespace: platform, labels: { app: web } }
+spec:
+  replicas: 2
+  strategy: { type: RollingUpdate, rollingUpdate: { maxSurge: 1, maxUnavailable: 0 } }
+  selector: { matchLabels: { app: web } }
+  template:
+    metadata: { labels: { app: web } }
+    spec:
+      containers:
+        - name: web
+          image: REGISTRY/web-app:GIT_SHA
+          ports: [{ containerPort: 80 }]
+          resources:
+            requests: { cpu: "50m", memory: "64Mi" }
+            limits:   { cpu: "200m", memory: "128Mi" }
+          readinessProbe:
+            httpGet: { path: /healthz, port: 80 }
+            initialDelaySeconds: 3
+
+---
+# Single ingress hostname — the ALB routes by path to each backend Service.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: platform-ingress
+  namespace: platform
+  annotations:
+    kubernetes.io/ingress.class: alb
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80},{"HTTPS":443}]'
+    alb.ingress.kubernetes.io/ssl-redirect: '443'
+    alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:ap-south-1:123456789012:certificate/XXXXXXXX
+    alb.ingress.kubernetes.io/healthcheck-path: /healthz
+    alb.ingress.kubernetes.io/target-group-attributes: stickiness.enabled=true,stickiness.lb_cookie.duration_seconds=3600
+    external-dns.alpha.kubernetes.io/hostname: shop.example.com
+spec:
+  rules:
+    - host: shop.example.com
+      http:
+        paths:
+          # ─── chat-service (longest prefix first) ───
+          - path: /api/v1/chat
+            pathType: Prefix
+            backend: { service: { name: chat, port: { number: 4001 } } }
+          - path: /socket.io
+            pathType: Prefix
+            backend: { service: { name: chat, port: { number: 4001 } } }
+          # ─── ecommerce-service ───
+          - path: /api/v1/products
+            pathType: Prefix
+            backend: { service: { name: ecommerce, port: { number: 4002 } } }
+          - path: /api/v1/categories
+            pathType: Prefix
+            backend: { service: { name: ecommerce, port: { number: 4002 } } }
+          - path: /api/v1/cart
+            pathType: Prefix
+            backend: { service: { name: ecommerce, port: { number: 4002 } } }
+          - path: /api/v1/orders
+            pathType: Prefix
+            backend: { service: { name: ecommerce, port: { number: 4002 } } }
+          - path: /api/v1/addresses
+            pathType: Prefix
+            backend: { service: { name: ecommerce, port: { number: 4002 } } }
+          # ─── rbac-service (default for /api/v1/*) ───
+          - path: /api/v1
+            pathType: Prefix
+            backend: { service: { name: rbac, port: { number: 4000 } } }
+          # ─── SPA fallback ───
+          - path: /
+            pathType: Prefix
+            backend: { service: { name: web, port: { number: 80 } } }

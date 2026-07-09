@@ -1,0 +1,209 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Free Tier EC2 (t2.micro) with Docker + k3s Kubernetes + Express App
+
+Parameters:
+  KeyPairName:
+    Type: String
+    Default: "rajesh-key-pair"
+
+  InstanceType:
+    Type: String
+    Default: "t3.micro"
+    Description: Free tier eligible in ap-south-1
+
+Resources:
+
+  # ─── SECURITY GROUP ───────────────────────────────────────────────────────────
+  K8sSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: k8s-express-sg
+      GroupDescription: Docker + k3s Kubernetes EC2
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+          Description: SSH
+        - IpProtocol: tcp
+          FromPort: 30080
+          ToPort: 30080
+          CidrIp: 0.0.0.0/0
+          Description: Kubernetes NodePort (Express App)
+        - IpProtocol: tcp
+          FromPort: 3000
+          ToPort: 3000
+          CidrIp: 0.0.0.0/0
+          Description: Docker direct port
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+          Description: HTTP
+
+  # ─── IAM ROLE FOR SSM ─────────────────────────────────────────────────────────
+  K8sInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: k8s-ec2-ssm-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ec2.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+        - arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess
+
+  K8sInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: k8s-ec2-profile
+      Roles:
+        - !Ref K8sInstanceRole
+
+  # ─── EC2 INSTANCE ─────────────────────────────────────────────────────────────
+  K8sEC2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !Ref InstanceType
+      KeyName: !Ref KeyPairName
+      ImageId: ami-0bc7aabcf58d1e02a
+      IamInstanceProfile: !Ref K8sInstanceProfile
+      SecurityGroups:
+        - !Ref K8sSecurityGroup
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: 20
+            VolumeType: gp3
+      Tags:
+        - Key: Name
+          Value: k8s-docker-express-production
+      UserData:
+        Fn::Base64: |
+          #!/bin/bash
+          exec > /var/log/userdata.log 2>&1
+          echo "=== Starting setup ==="
+
+          # System update
+          yum update -y
+
+          # Docker install
+          amazon-linux-extras install docker -y
+          systemctl start docker
+          systemctl enable docker
+          usermod -a -G docker ec2-user
+          echo "=== Docker installed ==="
+
+          # k3s install (lightweight kubernetes — disable heavy components to save memory)
+          curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="server --disable traefik --disable servicelb --write-kubeconfig-mode 644 --kubelet-arg=eviction-hard=memory.available<100Mi" sh -
+          echo "=== k3s installed ==="
+
+          # Wait for k3s to be ready
+          sleep 60
+          export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+          echo "export KUBECONFIG=/etc/rancher/k3s/k3s.yaml" >> /home/ec2-user/.bashrc
+
+          # Verify k3s
+          kubectl get nodes || echo "k3s not ready yet"
+
+          # Create k8s manifest
+          cat > /tmp/express-deployment.yaml << 'MANIFEST'
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: express-api
+            namespace: default
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
+                app: express-api
+            template:
+              metadata:
+                labels:
+                  app: express-api
+              spec:
+                containers:
+                - name: express-api
+                  image: node:18-alpine
+                  command: ["/bin/sh", "-c"]
+                  args:
+                  - |
+                    mkdir -p /app && cd /app && npm init -y > /dev/null &&
+                    npm install express > /dev/null &&
+                    node -e "
+                    const express=require('express');
+                    const app=express();
+                    app.use(express.json());
+                    app.use((req,res,next)=>{res.header('Access-Control-Allow-Origin','*');res.header('Access-Control-Allow-Headers','*');res.header('Access-Control-Allow-Methods','*');if(req.method==='OPTIONS')return res.sendStatus(200);next();});
+                    app.get('/health',(req,res)=>res.json({status:'healthy',service:'express-on-k8s',pod:process.env.HOSTNAME,uptime:Math.floor(process.uptime())+'s',runtime:'Docker+k3s'}));
+                    app.get('/orders',(req,res)=>res.json({orders:[{id:1,item:'Laptop',status:'delivered'},{id:2,item:'Phone',status:'shipped'}],servedBy:'Pod:'+process.env.HOSTNAME}));
+                    app.post('/orders',(req,res)=>res.status(201).json({message:'Created by k8s pod',order:{...req.body,id:Math.floor(Math.random()*1000),status:'pending'}}));
+                    app.get('/pod-info',(req,res)=>res.json({podName:process.env.HOSTNAME,namespace:'default',image:'node:18-alpine',runtime:'k3s-kubernetes'}));
+                    app.listen(3000,()=>console.log('Express in k8s pod'));
+                    "
+                  ports:
+                  - containerPort: 3000
+                  env:
+                  - name: HOSTNAME
+                    valueFrom:
+                      fieldRef:
+                        fieldPath: metadata.name
+                  resources:
+                    requests:
+                      memory: "128Mi"
+                      cpu: "100m"
+                    limits:
+                      memory: "256Mi"
+                      cpu: "500m"
+          ---
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: express-service
+          spec:
+            type: NodePort
+            selector:
+              app: express-api
+            ports:
+            - port: 3000
+              targetPort: 3000
+              nodePort: 30080
+          MANIFEST
+
+          kubectl apply -f /tmp/express-deployment.yaml
+          echo "=== K8s deployment applied ==="
+          echo "=== Setup complete! Express will be ready in 2-3 minutes on port 30080 ==="
+
+  # ─── ELASTIC IP ───────────────────────────────────────────────────────────────
+  K8sElasticIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      InstanceId: !Ref K8sEC2Instance
+      Tags:
+        - Key: Name
+          Value: k8s-ec2-eip
+
+Outputs:
+  InstanceId:
+    Value: !Ref K8sEC2Instance
+    Description: EC2 Instance ID
+
+  PublicIP:
+    Value: !GetAtt K8sEC2Instance.PublicIp
+    Description: EC2 Public IP
+
+  ElasticIP:
+    Value: !Ref K8sElasticIP
+    Description: Elastic IP (static)
+
+  ExpressURL:
+    Value: !Sub "http://${K8sElasticIP}:30080"
+    Description: Express App via Kubernetes NodePort
+
+  HealthCheck:
+    Value: !Sub "http://${K8sElasticIP}:30080/health"
+    Description: Health check endpoint

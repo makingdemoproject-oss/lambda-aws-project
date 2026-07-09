@@ -1,0 +1,501 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Step Functions Order Workflow - Lambda/SQS/SNS/ECS/ALL targets
+
+Parameters:
+  Environment:
+    Type: String
+    Default: production
+  SqsQueueUrl:
+    Type: String
+    Default: ""
+  SnsTopicArn:
+    Type: String
+    Default: ""
+  EcsQueueUrl:
+    Type: String
+    Default: ""
+
+Resources:
+
+  # ─── DynamoDB ───────────────────────────────────────────────────────────────
+  StepFnTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub ec2-stepfn-executions-${Environment}
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: executionId, AttributeType: S }
+      KeySchema:
+        - { AttributeName: executionId, KeyType: HASH }
+
+  # ─── IAM Role for Lambda functions ─────────────────────────────────────────
+  SfLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub sf-lambda-role-${Environment}
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: SfLambdaPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [dynamodb:PutItem, dynamodb:GetItem, dynamodb:Scan, dynamodb:Query]
+                Resource: !GetAtt StepFnTable.Arn
+              - Effect: Allow
+                Action: [states:StartExecution, states:DescribeExecution, states:ListExecutions, states:GetExecutionHistory]
+                Resource: "*"
+
+  # ─── IAM Role for State Machine ─────────────────────────────────────────────
+  SfStateMachineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub sf-state-machine-role-${Environment}
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: states.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: SfStateMachinePolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: "*"
+              - Effect: Allow
+                Action: sqs:SendMessage
+                Resource: "*"
+              - Effect: Allow
+                Action: sns:Publish
+                Resource: "*"
+
+  # ─── Lambda: ValidateOrder ──────────────────────────────────────────────────
+  ValidateFn:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub sf-validate-order-${Environment}
+      Runtime: nodejs22.x
+      Handler: index.handler
+      Role: !GetAtt SfLambdaRole.Arn
+      Code:
+        ZipFile: |
+          const { randomUUID } = require('crypto');
+          exports.handler = async (event) => {
+            if (!event.product || !event.amount) throw new Error('product and amount required');
+            return {
+              ...event,
+              executionId: event.executionId || randomUUID(),
+              orderId: event.orderId || `ORD-${Date.now()}`,
+              eventType: event.eventType || 'OrderCreated',
+              validated: true,
+              validatedAt: new Date().toISOString(),
+            };
+          };
+
+  # ─── Lambda: ProcessWithLambda ──────────────────────────────────────────────
+  ProcessLambdaFn:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub sf-process-lambda-${Environment}
+      Runtime: nodejs22.x
+      Handler: index.handler
+      Role: !GetAtt SfLambdaRole.Arn
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref StepFnTable
+      Code:
+        ZipFile: |
+          const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
+          const { DynamoDBDocumentClient, PutCommand } = require('@aws-sdk/lib-dynamodb');
+          const { randomUUID } = require('crypto');
+          const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({ region: process.env.AWS_REGION }));
+          exports.handler = async (event) => {
+            await dynamo.send(new PutCommand({ TableName: process.env.TABLE_NAME, Item: {
+              executionId: (event.executionId || randomUUID()) + '-lambda',
+              target: 'SF-Lambda', orderId: event.orderId,
+              product: event.product, amount: event.amount,
+              processedAt: new Date().toISOString(), status: 'SUCCEEDED',
+            }}));
+            return { ...event, lambdaDone: true, target: 'Lambda' };
+          };
+
+  # ─── Lambda: SaveResult ─────────────────────────────────────────────────────
+  SaveResultFn:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub sf-save-result-${Environment}
+      Runtime: nodejs22.x
+      Handler: index.handler
+      Role: !GetAtt SfLambdaRole.Arn
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref StepFnTable
+      Code:
+        ZipFile: |
+          const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
+          const { DynamoDBDocumentClient, PutCommand } = require('@aws-sdk/lib-dynamodb');
+          const { randomUUID } = require('crypto');
+          const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({ region: process.env.AWS_REGION }));
+          exports.handler = async (event) => {
+            const r = Array.isArray(event) ? event[0] : event;
+            const id = randomUUID();
+            await dynamo.send(new PutCommand({ TableName: process.env.TABLE_NAME, Item: {
+              executionId: id, target: 'SF-FINAL',
+              orderId: r.orderId, product: r.product, amount: r.amount,
+              savedAt: new Date().toISOString(), status: 'COMPLETED',
+              rawResult: JSON.stringify(event),
+            }}));
+            return { success: true, savedId: id, savedAt: new Date().toISOString() };
+          };
+
+  # ─── Lambda: API — Start Execution ─────────────────────────────────────────
+  StartExecutionFn:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub sf-start-execution-${Environment}
+      Runtime: nodejs22.x
+      Handler: index.handler
+      Role: !GetAtt SfLambdaRole.Arn
+      Environment:
+        Variables:
+          STATE_MACHINE_ARN: !Ref OrderWorkflow
+      Code:
+        ZipFile: |
+          const { SFNClient, StartExecutionCommand } = require('@aws-sdk/client-sfn');
+          const { randomUUID } = require('crypto');
+          const sfn = new SFNClient({ region: process.env.AWS_REGION });
+          exports.handler = async (event) => {
+            const body = typeof event.body === 'string' ? JSON.parse(event.body) : (event.body || event);
+            const { target='ALL', product='Laptop Pro', amount='25000', eventType='OrderCreated' } = body;
+            const input = { executionId: randomUUID(), target, product, amount, eventType, orderId: `ORD-${Date.now()}` };
+            const res = await sfn.send(new StartExecutionCommand({
+              stateMachineArn: process.env.STATE_MACHINE_ARN,
+              name: `exec-${target}-${Date.now()}`,
+              input: JSON.stringify(input),
+            }));
+            return {
+              statusCode: 200,
+              headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
+              body: JSON.stringify({ executionArn: res.executionArn, startDate: res.startDate, target, input }),
+            };
+          };
+
+  # ─── Lambda: API — List Executions ─────────────────────────────────────────
+  ListExecutionsFn:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub sf-list-executions-${Environment}
+      Runtime: nodejs22.x
+      Handler: index.handler
+      Role: !GetAtt SfLambdaRole.Arn
+      Environment:
+        Variables:
+          STATE_MACHINE_ARN: !Ref OrderWorkflow
+      Code:
+        ZipFile: |
+          const { SFNClient, ListExecutionsCommand, DescribeExecutionCommand } = require('@aws-sdk/client-sfn');
+          const sfn = new SFNClient({ region: process.env.AWS_REGION });
+          exports.handler = async () => {
+            const statuses = ['RUNNING','SUCCEEDED','FAILED','TIMED_OUT'];
+            const allExecs = [];
+            for (const s of statuses) {
+              try {
+                const r = await sfn.send(new ListExecutionsCommand({ stateMachineArn: process.env.STATE_MACHINE_ARN, statusFilter: s, maxResults: 10 }));
+                allExecs.push(...(r.executions||[]));
+              } catch {}
+            }
+            allExecs.sort((a,b) => new Date(b.startDate) - new Date(a.startDate));
+            const detailed = await Promise.all(allExecs.slice(0,20).map(async ex => {
+              try {
+                const d = await sfn.send(new DescribeExecutionCommand({ executionArn: ex.executionArn }));
+                const inp = JSON.parse(d.input||'{}');
+                return { executionArn: ex.executionArn, name: ex.name, status: ex.status, startDate: ex.startDate, stopDate: ex.stopDate, target: inp.target||'ALL', product: inp.product, amount: inp.amount, orderId: inp.orderId };
+              } catch { return ex; }
+            }));
+            return {
+              statusCode: 200,
+              headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
+              body: JSON.stringify({ executions: detailed }),
+            };
+          };
+
+  # ─── Lambda: API — Get Execution Steps ─────────────────────────────────────
+  GetExecutionFn:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub sf-get-execution-${Environment}
+      Runtime: nodejs22.x
+      Handler: index.handler
+      Role: !GetAtt SfLambdaRole.Arn
+      Code:
+        ZipFile: |
+          const { SFNClient, GetExecutionHistoryCommand, DescribeExecutionCommand } = require('@aws-sdk/client-sfn');
+          const sfn = new SFNClient({ region: process.env.AWS_REGION });
+          exports.handler = async (event) => {
+            const arn = event.queryStringParameters?.arn;
+            if (!arn) return { statusCode:400, headers:{'Access-Control-Allow-Origin':'*'}, body: JSON.stringify({error:'arn required'}) };
+            const [desc, hist] = await Promise.all([
+              sfn.send(new DescribeExecutionCommand({ executionArn: arn })),
+              sfn.send(new GetExecutionHistoryCommand({ executionArn: arn, maxResults: 50 })),
+            ]);
+            const input = JSON.parse(desc.input||'{}');
+            const steps = (hist.events||[]).map(e => ({ id: e.id, type: e.type, timestamp: e.timestamp, name: (e.stateEnteredEventDetails||e.stateExitedEventDetails||{}).name }));
+            return {
+              statusCode: 200,
+              headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
+              body: JSON.stringify({ executionArn: arn, status: desc.status, startDate: desc.startDate, stopDate: desc.stopDate, input, steps }),
+            };
+          };
+
+  # ─── API Gateway ────────────────────────────────────────────────────────────
+  StepFnApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Sub step-fn-api-${Environment}
+      ProtocolType: HTTP
+      CorsConfiguration:
+        AllowOrigins: ['*']
+        AllowMethods: ['GET', 'POST', 'OPTIONS']
+        AllowHeaders: ['Content-Type']
+
+  StepFnApiStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref StepFnApi
+      StageName: prod
+      AutoDeploy: true
+
+  StartIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref StepFnApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${StartExecutionFn.Arn}/invocations
+      PayloadFormatVersion: '2.0'
+
+  ListIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref StepFnApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ListExecutionsFn.Arn}/invocations
+      PayloadFormatVersion: '2.0'
+
+  GetIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref StepFnApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${GetExecutionFn.Arn}/invocations
+      PayloadFormatVersion: '2.0'
+
+  StartRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref StepFnApi
+      RouteKey: POST /sf/start
+      Target: !Sub integrations/${StartIntegration}
+
+  ListRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref StepFnApi
+      RouteKey: GET /sf/executions
+      Target: !Sub integrations/${ListIntegration}
+
+  GetRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref StepFnApi
+      RouteKey: GET /sf/execution
+      Target: !Sub integrations/${GetIntegration}
+
+  StartFnPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref StartExecutionFn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${StepFnApi}/*
+
+  ListFnPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ListExecutionsFn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${StepFnApi}/*
+
+  GetFnPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref GetExecutionFn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${StepFnApi}/*
+
+  # ─── Step Functions State Machine ───────────────────────────────────────────
+  OrderWorkflow:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      StateMachineName: !Sub order-workflow-${Environment}
+      RoleArn: !GetAtt SfStateMachineRole.Arn
+      DefinitionString: !Sub
+        - |
+          {
+            "Comment": "Order Processing - Lambda/SQS/SNS/ECS/ALL",
+            "StartAt": "ValidateOrder",
+            "States": {
+              "ValidateOrder": {
+                "Type": "Task",
+                "Resource": "${ValidateArn}",
+                "Next": "RouteToTarget",
+                "Catch": [{ "ErrorEquals": ["States.ALL"], "Next": "WorkflowFailed" }]
+              },
+              "RouteToTarget": {
+                "Type": "Choice",
+                "Choices": [
+                  { "Variable": "$.target", "StringEquals": "Lambda", "Next": "ProcessWithLambda" },
+                  { "Variable": "$.target", "StringEquals": "SQS",    "Next": "ProcessWithSQS"    },
+                  { "Variable": "$.target", "StringEquals": "SNS",    "Next": "ProcessWithSNS"    },
+                  { "Variable": "$.target", "StringEquals": "ECS",    "Next": "ProcessWithECS"    },
+                  { "Variable": "$.target", "StringEquals": "ALL",    "Next": "ProcessAll"        }
+                ],
+                "Default": "ProcessAll"
+              },
+              "ProcessWithLambda": {
+                "Type": "Task",
+                "Resource": "${ProcessLambdaArn}",
+                "Next": "SaveResult"
+              },
+              "ProcessWithSQS": {
+                "Type": "Task",
+                "Resource": "arn:aws:states:::sqs:sendMessage",
+                "Parameters": {
+                  "QueueUrl": "${SqsUrl}",
+                  "MessageBody.$": "States.JsonToString($)",
+                  "MessageAttributes": {
+                    "target": { "DataType": "String", "StringValue": "SQS" }
+                  }
+                },
+                "ResultPath": "$.sqsResult",
+                "Next": "SaveResult"
+              },
+              "ProcessWithSNS": {
+                "Type": "Task",
+                "Resource": "arn:aws:states:::sns:publish",
+                "Parameters": {
+                  "TopicArn": "${SnsArn}",
+                  "Message.$": "States.JsonToString($)",
+                  "Subject": "StepFunctions-Order"
+                },
+                "ResultPath": "$.snsResult",
+                "Next": "SaveResult"
+              },
+              "ProcessWithECS": {
+                "Type": "Task",
+                "Resource": "arn:aws:states:::sqs:sendMessage",
+                "Parameters": {
+                  "QueueUrl": "${EcsQueueUrl}",
+                  "MessageBody.$": "States.JsonToString($)",
+                  "MessageAttributes": {
+                    "target": { "DataType": "String", "StringValue": "ECS" }
+                  }
+                },
+                "ResultPath": "$.ecsResult",
+                "Next": "SaveResult"
+              },
+              "ProcessAll": {
+                "Type": "Parallel",
+                "Next": "SaveResult",
+                "Branches": [
+                  {
+                    "StartAt": "LambdaStep",
+                    "States": {
+                      "LambdaStep": {
+                        "Type": "Task",
+                        "Resource": "${ProcessLambdaArn}",
+                        "End": true
+                      }
+                    }
+                  },
+                  {
+                    "StartAt": "SQSStep",
+                    "States": {
+                      "SQSStep": {
+                        "Type": "Task",
+                        "Resource": "arn:aws:states:::sqs:sendMessage",
+                        "Parameters": {
+                          "QueueUrl": "${SqsUrl}",
+                          "MessageBody.$": "States.JsonToString($)"
+                        },
+                        "End": true
+                      }
+                    }
+                  },
+                  {
+                    "StartAt": "SNSStep",
+                    "States": {
+                      "SNSStep": {
+                        "Type": "Task",
+                        "Resource": "arn:aws:states:::sns:publish",
+                        "Parameters": {
+                          "TopicArn": "${SnsArn}",
+                          "Message.$": "States.JsonToString($)"
+                        },
+                        "End": true
+                      }
+                    }
+                  },
+                  {
+                    "StartAt": "ECSStep",
+                    "States": {
+                      "ECSStep": {
+                        "Type": "Task",
+                        "Resource": "arn:aws:states:::sqs:sendMessage",
+                        "Parameters": {
+                          "QueueUrl": "${EcsQueueUrl}",
+                          "MessageBody.$": "States.JsonToString($)"
+                        },
+                        "End": true
+                      }
+                    }
+                  }
+                ]
+              },
+              "SaveResult": {
+                "Type": "Task",
+                "Resource": "${SaveResultArn}",
+                "End": true
+              },
+              "WorkflowFailed": {
+                "Type": "Fail",
+                "Error": "WorkflowError",
+                "Cause": "Validation or processing failed"
+              }
+            }
+          }
+        - ValidateArn: !GetAtt ValidateFn.Arn
+          ProcessLambdaArn: !GetAtt ProcessLambdaFn.Arn
+          SaveResultArn: !GetAtt SaveResultFn.Arn
+          SqsUrl: !Ref SqsQueueUrl
+          SnsArn: !Ref SnsTopicArn
+          EcsQueueUrl: !Ref EcsQueueUrl
+
+Outputs:
+  ApiUrl:
+    Value: !Sub https://${StepFnApi}.execute-api.${AWS::Region}.amazonaws.com/prod
+  StateMachineArn:
+    Value: !Ref OrderWorkflow
+  DynamoTable:
+    Value: !Ref StepFnTable

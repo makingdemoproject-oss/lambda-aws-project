@@ -1,0 +1,18 @@
+# One-shot DB migration Job. CI runs `kubectl apply -f` then `kubectl wait`
+# BEFORE rolling the Deployment, so the new schema is live before new pods.
+apiVersion: batch/v1
+kind: Job
+metadata: { name: rbac-migrate, namespace: platform }
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 600
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: REGISTRY/rbac-service:GIT_SHA
+          command: ["npx","sequelize-cli","db:migrate"]
+          envFrom:
+            - configMapRef: { name: rbac-config }
+            - secretRef:    { name: rbac-secrets }

@@ -1,3 +1,11 @@
 node_modules/
 *.zip
 .env
+
+# Sensitive/oversized items found during review — never push these
+yes
+yes.pub
+aws-api-gateway-alb-cognito-ec2/ec2-3-setup/
+*.tar
+ssl-cert-nginx/*.pem
+

@@ -1,0 +1,282 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Outbox Pattern - PostgreSQL + DynamoDB (extends existing lambda-auth-rds API)
+
+Parameters:
+  S3Bucket:
+    Type: String
+    Default: express-deploy-202606232329
+  S3Key:
+    Type: String
+    Default: lambda-auth-rds/lambda-auth-rds.zip
+  DBHost:
+    Type: String
+    Default: postgres-production.cn2yekq0q1tg.ap-south-1.rds.amazonaws.com
+  DBPort:
+    Type: String
+    Default: '5432'
+  DBName:
+    Type: String
+    Default: orderdb
+  DBUser:
+    Type: String
+    Default: appuser
+  DBPassword:
+    Type: String
+    NoEcho: true
+  VpcId:
+    Type: String
+    Default: vpc-065599aca72278f93
+  SubnetIds:
+    Type: CommaDelimitedList
+    Default: subnet-0e4f8a39a1e33b77e,subnet-08f4b25fe38bdf09a,subnet-0b8d18d376a07ea45
+  RdsSecurityGroupId:
+    Type: String
+    Default: sg-01eaee21a0456ea9a
+  ExistingApiId:
+    Type: String
+    Default: ixthoe12fe
+  DynamoTableName:
+    Type: String
+    Default: outbox-orders-cache
+  AccountId:
+    Type: String
+    Default: '527055790362'
+
+Resources:
+
+  # ── DynamoDB Table — outbox-orders-cache ─────────────────────────────────
+  OutboxOrdersTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Ref DynamoTableName
+      BillingMode: PAY_PER_REQUEST
+      SSESpecification:
+        SSEEnabled: true
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+      Tags:
+        - Key: Project
+          Value: outbox-pattern
+
+  # ── Security Group for Outbox Lambda ─────────────────────────────────────
+  OutboxLambdaSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Outbox Lambda - outbound to RDS + HTTPS
+      VpcId: !Ref VpcId
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          DestinationSecurityGroupId: !Ref RdsSecurityGroupId
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: lambda-outbox-sg
+
+  RdsIngressFromOutboxLambda:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref RdsSecurityGroupId
+      IpProtocol: tcp
+      FromPort: 5432
+      ToPort: 5432
+      SourceSecurityGroupId: !GetAtt OutboxLambdaSG.GroupId
+      Description: Allow outbox Lambda to connect to RDS
+
+  # ── IAM Managed Policy (not inline — best practice) ──────────────────────
+  OutboxLambdaManagedPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: lambda-outbox-dynamo-logs-policy
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - dynamodb:PutItem
+              - dynamodb:UpdateItem
+              - dynamodb:GetItem
+              - dynamodb:Scan
+              - dynamodb:Query
+            Resource: !GetAtt OutboxOrdersTable.Arn
+          - Effect: Allow
+            Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource: !Sub arn:aws:logs:${AWS::Region}:${AccountId}:*
+
+  # ── IAM Role ──────────────────────────────────────────────────────────────
+  OutboxLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: lambda-outbox-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+        - !Ref OutboxLambdaManagedPolicy
+
+  # ── Lambda Function: outbox-processor ────────────────────────────────────
+  OutboxProcessorFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: lambda-outbox-processor
+      Runtime: nodejs18.x
+      Role: !GetAtt OutboxLambdaRole.Arn
+      Handler: src/functions/outbox.handler
+      Code:
+        S3Bucket: !Ref S3Bucket
+        S3Key: !Ref S3Key
+      Timeout: 30
+      Environment:
+        Variables:
+          DB_HOST:      !Ref DBHost
+          DB_PORT:      !Ref DBPort
+          DB_NAME:      !Ref DBName
+          DB_USER:      !Ref DBUser
+          DB_PASSWORD:  !Ref DBPassword
+          DYNAMO_TABLE: !Ref DynamoTableName
+      VpcConfig:
+        SecurityGroupIds: [!GetAtt OutboxLambdaSG.GroupId]
+        SubnetIds: !Ref SubnetIds
+
+  # ── Lambda Function: outbox-worker (EventBridge) ─────────────────────────
+  OutboxWorkerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: lambda-outbox-worker
+      Runtime: nodejs18.x
+      Role: !GetAtt OutboxLambdaRole.Arn
+      Handler: src/functions/outbox-worker.handler
+      Code:
+        S3Bucket: !Ref S3Bucket
+        S3Key: !Ref S3Key
+      Timeout: 60
+      Environment:
+        Variables:
+          DB_HOST:      !Ref DBHost
+          DB_PORT:      !Ref DBPort
+          DB_NAME:      !Ref DBName
+          DB_USER:      !Ref DBUser
+          DB_PASSWORD:  !Ref DBPassword
+          DYNAMO_TABLE: !Ref DynamoTableName
+      VpcConfig:
+        SecurityGroupIds: [!GetAtt OutboxLambdaSG.GroupId]
+        SubnetIds: !Ref SubnetIds
+
+  # ── Lambda Permissions (SourceAccount limits to our account only) ─────────
+  OutboxProcessorPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt OutboxProcessorFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceAccount: !Ref AccountId
+      SourceArn: !Sub "arn:aws:execute-api:ap-south-1:${AccountId}:${ExistingApiId}/*"
+
+  OutboxWorkerEventBridgePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt OutboxWorkerFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceAccount: !Ref AccountId
+      SourceArn: !GetAtt OutboxWorkerScheduleRule.Arn
+
+  # ── EventBridge Rule (DISABLED — enable manually after RDS is up) ─────────
+  OutboxWorkerScheduleRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: outbox-worker-every-1min
+      Description: Trigger outbox-worker Lambda every 1 minute to sync PENDING events to DynamoDB
+      ScheduleExpression: rate(1 minute)
+      State: ENABLED
+      Targets:
+        - Id: OutboxWorkerTarget
+          Arn: !GetAtt OutboxWorkerFunction.Arn
+
+  # ── API Gateway V2 Integration (existing API: ixthoe12fe) ────────────────
+  OutboxIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref ExistingApiId
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt OutboxProcessorFunction.Arn
+      PayloadFormatVersion: '2.0'
+
+  # ── Routes on existing HTTP API ───────────────────────────────────────────
+  PostOutboxOrdersRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref ExistingApiId
+      RouteKey: POST /outbox/orders
+      AuthorizationType: NONE
+      Target: !Sub integrations/${OutboxIntegration}
+
+  GetOutboxOrdersRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref ExistingApiId
+      RouteKey: GET /outbox/orders
+      AuthorizationType: NONE
+      Target: !Sub integrations/${OutboxIntegration}
+
+  GetOutboxEventsRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref ExistingApiId
+      RouteKey: GET /outbox/events
+      AuthorizationType: NONE
+      Target: !Sub integrations/${OutboxIntegration}
+
+  PostOutboxProcessRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref ExistingApiId
+      RouteKey: POST /outbox/process
+      AuthorizationType: NONE
+      Target: !Sub integrations/${OutboxIntegration}
+
+  GetOutboxDynamoRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref ExistingApiId
+      RouteKey: GET /outbox/dynamodb
+      AuthorizationType: NONE
+      Target: !Sub integrations/${OutboxIntegration}
+
+Outputs:
+  DynamoTableName:
+    Description: DynamoDB table for outbox orders cache
+    Value: !Ref OutboxOrdersTable
+  OutboxProcessorArn:
+    Value: !GetAtt OutboxProcessorFunction.Arn
+  OutboxWorkerArn:
+    Value: !GetAtt OutboxWorkerFunction.Arn
+  EventBridgeRule:
+    Value: !Ref OutboxWorkerScheduleRule
+  ApiEndpoints:
+    Description: New outbox routes on existing API
+    Value: !Sub |
+      POST https://${ExistingApiId}.execute-api.${AWS::Region}.amazonaws.com/prod/outbox/orders
+      GET  https://${ExistingApiId}.execute-api.${AWS::Region}.amazonaws.com/prod/outbox/orders
+      GET  https://${ExistingApiId}.execute-api.${AWS::Region}.amazonaws.com/prod/outbox/events
+      POST https://${ExistingApiId}.execute-api.${AWS::Region}.amazonaws.com/prod/outbox/process
+      GET  https://${ExistingApiId}.execute-api.${AWS::Region}.amazonaws.com/prod/outbox/dynamodb

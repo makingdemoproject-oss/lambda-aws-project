@@ -1,0 +1,96 @@
+# rbac-service — owns auth + RBAC + menus, the only signer of JWTs.
+# This file is self-contained (Service + Deployment + HPA + PDB + ConfigMap + Secret).
+
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: rbac-config, namespace: platform }
+data:
+  NODE_ENV: "production"
+  PORT: "4000"
+  API_PREFIX: "/api/v1"
+  DB_HOST: "platform-rds.xxxxxx.ap-south-1.rds.amazonaws.com"
+  DB_PORT: "5432"
+  DB_NAME: "app"
+  DB_SCHEMA: "rbac"
+  DB_SSL: "true"
+  REDIS_URL: "redis://redis.platform.svc.cluster.local:6379"
+  CORS_ORIGIN: "https://shop.example.com"
+  LOG_LEVEL: "info"
+  PM2_INSTANCES: "max"
+
+---
+apiVersion: v1
+kind: Secret
+metadata: { name: rbac-secrets, namespace: platform }
+type: Opaque
+stringData:
+  DB_USERNAME: "rbac_app"
+  DB_PASSWORD: "REPLACE_FROM_SECRETS_MANAGER"
+  JWT_ACCESS_SECRET:  "REPLACE_FROM_SECRETS_MANAGER"     # MUST equal ecommerce/chat
+  JWT_REFRESH_SECRET: "REPLACE_FROM_SECRETS_MANAGER"
+
+---
+apiVersion: v1
+kind: Service
+metadata: { name: rbac, namespace: platform, labels: { app: rbac } }
+spec:
+  selector: { app: rbac }
+  ports: [{ port: 4000, targetPort: 4000, name: http }]
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: rbac, namespace: platform, labels: { app: rbac } }
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxSurge: 1, maxUnavailable: 0 }
+  selector: { matchLabels: { app: rbac } }
+  template:
+    metadata: { labels: { app: rbac } }
+    spec:
+      terminationGracePeriodSeconds: 40
+      containers:
+        - name: rbac
+          image: REGISTRY/rbac-service:GIT_SHA
+          ports: [{ containerPort: 4000, name: http }]
+          envFrom:
+            - configMapRef: { name: rbac-config }
+            - secretRef:    { name: rbac-secrets }
+          resources:
+            requests: { cpu: "200m", memory: "256Mi" }
+            limits:   { cpu: "1000m", memory: "768Mi" }
+          startupProbe:
+            httpGet: { path: /api/v1/health, port: 4000 }
+            failureThreshold: 30
+            periodSeconds: 2
+          readinessProbe:
+            httpGet: { path: /api/v1/ready, port: 4000 }
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /api/v1/health, port: 4000 }
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          lifecycle:
+            preStop: { exec: { command: ["sh","-c","sleep 5"] } }
+
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata: { name: rbac-hpa, namespace: platform }
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: rbac }
+  minReplicas: 3
+  maxReplicas: 15
+  metrics:
+    - { type: Resource, resource: { name: cpu,    target: { type: Utilization, averageUtilization: 65 } } }
+    - { type: Resource, resource: { name: memory, target: { type: Utilization, averageUtilization: 75 } } }
+
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: { name: rbac-pdb, namespace: platform }
+spec:
+  minAvailable: 2
+  selector: { matchLabels: { app: rbac } }

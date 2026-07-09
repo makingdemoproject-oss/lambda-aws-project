@@ -1,0 +1,34 @@
+version: 0.2
+
+env:
+  variables:
+    AWS_DEFAULT_REGION: ap-south-1
+    ECR_REPO_NAME: ec2-express-ecs-production
+    ECS_CLUSTER: ec2-events-cluster-production
+    ECS_SERVICE: ec2-events-service-production
+
+phases:
+  pre_build:
+    commands:
+      - echo Logging in to ECR...
+      - AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+      - ECR_URI=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$ECR_REPO_NAME
+      - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
+      - IMAGE_TAG=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c1-8)
+
+  build:
+    commands:
+      - echo Building Docker image...
+      - cd eventbridge-ecs/app
+      - docker build -t $ECR_REPO_NAME .
+      - docker tag $ECR_REPO_NAME:latest $ECR_URI:latest
+      - docker tag $ECR_REPO_NAME:latest $ECR_URI:$IMAGE_TAG
+
+  post_build:
+    commands:
+      - echo Pushing to ECR...
+      - docker push $ECR_URI:latest
+      - docker push $ECR_URI:$IMAGE_TAG
+      - echo Updating ECS service...
+      - aws ecs update-service --cluster $ECS_CLUSTER --service $ECS_SERVICE --force-new-deployment --region $AWS_DEFAULT_REGION
+      - echo Build complete!

@@ -1,0 +1,275 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: S3 upload -> SQS -> Lambda -> DynamoDB pipeline
+
+Parameters:
+  CodeBucket:
+    Type: String
+    Default: express-deploy-202606232329
+  CodeKey:
+    Type: String
+    Default: s3-sqs-lambda-dynamodb.zip
+
+Resources:
+
+  # ── DynamoDB ──────────────────────────────────────────
+  UploadsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: csv-file-uploads
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: fileId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: fileId
+          KeyType: HASH
+
+  # ── SQS Queue ─────────────────────────────────────────
+  UploadsQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: csv-uploads-queue-production
+      VisibilityTimeout: 60
+      MessageRetentionPeriod: 86400
+
+  UploadsQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref UploadsQueue
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: s3.amazonaws.com
+            Action: sqs:SendMessage
+            Resource: !GetAtt UploadsQueue.Arn
+            Condition:
+              ArnLike:
+                aws:SourceArn: !Sub 'arn:aws:s3:::csv-uploads-${AWS::AccountId}-production'
+
+  # ── S3 Bucket ─────────────────────────────────────────
+  UploadsBucket:
+    Type: AWS::S3::Bucket
+    DependsOn: UploadsQueuePolicy
+    Properties:
+      BucketName: !Sub 'csv-uploads-${AWS::AccountId}-production'
+      CorsConfiguration:
+        CorsRules:
+          - AllowedOrigins: ['*']
+            AllowedMethods: [GET, PUT, POST, HEAD]
+            AllowedHeaders: ['*']
+            MaxAge: 3000
+      NotificationConfiguration:
+        QueueConfigurations:
+          - Event: s3:ObjectCreated:*
+            Queue: !GetAtt UploadsQueue.Arn
+
+  # ── IAM Role ──────────────────────────────────────────
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: s3-sqs-dynamo-lambda-role-production
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: s3-sqs-dynamo-policy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [logs:CreateLogGroup, logs:CreateLogStream, logs:PutLogEvents]
+                Resource: 'arn:aws:logs:*:*:*'
+              - Effect: Allow
+                Action: [s3:PutObject, s3:GetObject, s3:ListBucket]
+                Resource:
+                  - !Sub 'arn:aws:s3:::csv-uploads-${AWS::AccountId}-production'
+                  - !Sub 'arn:aws:s3:::csv-uploads-${AWS::AccountId}-production/*'
+              - Effect: Allow
+                Action: [sqs:ReceiveMessage, sqs:DeleteMessage, sqs:GetQueueAttributes]
+                Resource: !GetAtt UploadsQueue.Arn
+              - Effect: Allow
+                Action: [dynamodb:PutItem, dynamodb:GetItem, dynamodb:Scan, dynamodb:Query]
+                Resource: !GetAtt UploadsTable.Arn
+
+  # ── Lambda Functions ──────────────────────────────────
+  HealthFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: s3-demo-health-production
+      Runtime: nodejs18.x
+      Handler: health.handler
+      Role: !GetAtt LambdaRole.Arn
+      Code:
+        S3Bucket: !Ref CodeBucket
+        S3Key: !Ref CodeKey
+      Environment:
+        Variables:
+          UPLOADS_BUCKET: !Ref UploadsBucket
+          UPLOADS_TABLE: !Ref UploadsTable
+
+  PresignedUrlFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: s3-demo-presigned-url-production
+      Runtime: nodejs18.x
+      Handler: presignedUrl.handler
+      Role: !GetAtt LambdaRole.Arn
+      Timeout: 30
+      Code:
+        S3Bucket: !Ref CodeBucket
+        S3Key: !Ref CodeKey
+      Environment:
+        Variables:
+          UPLOADS_BUCKET: !Ref UploadsBucket
+          UPLOADS_TABLE: !Ref UploadsTable
+
+  SqsConsumerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: s3-demo-sqs-consumer-production
+      Runtime: nodejs18.x
+      Handler: sqsConsumer.handler
+      Role: !GetAtt LambdaRole.Arn
+      Timeout: 60
+      Code:
+        S3Bucket: !Ref CodeBucket
+        S3Key: !Ref CodeKey
+      Environment:
+        Variables:
+          UPLOADS_BUCKET: !Ref UploadsBucket
+          UPLOADS_TABLE: !Ref UploadsTable
+
+  SqsEventSourceMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      EventSourceArn: !GetAtt UploadsQueue.Arn
+      FunctionName: !GetAtt SqsConsumerFunction.Arn
+      BatchSize: 5
+      FunctionResponseTypes: [ReportBatchItemFailures]
+
+  GetUploadsFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: s3-demo-get-uploads-production
+      Runtime: nodejs18.x
+      Handler: getUploads.handler
+      Role: !GetAtt LambdaRole.Arn
+      Timeout: 30
+      Code:
+        S3Bucket: !Ref CodeBucket
+        S3Key: !Ref CodeKey
+      Environment:
+        Variables:
+          UPLOADS_BUCKET: !Ref UploadsBucket
+          UPLOADS_TABLE: !Ref UploadsTable
+
+  # ── HTTP API Gateway ──────────────────────────────────
+  HttpApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: s3-demo-api-production
+      ProtocolType: HTTP
+      CorsConfiguration:
+        AllowOrigins: ['*']
+        AllowMethods: [GET, POST, OPTIONS]
+        AllowHeaders: ['*']
+
+  HttpApiStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref HttpApi
+      StageName: prod
+      AutoDeploy: true
+
+  # Lambda permissions for API GW
+  HealthPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref HealthFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${HttpApi}/*/*'
+
+  PresignedPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref PresignedUrlFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${HttpApi}/*/*'
+
+  GetUploadsPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref GetUploadsFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${HttpApi}/*/*'
+
+  # Integrations
+  HealthIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref HttpApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${HealthFunction.Arn}/invocations'
+      PayloadFormatVersion: '2.0'
+
+  PresignedIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref HttpApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${PresignedUrlFunction.Arn}/invocations'
+      PayloadFormatVersion: '2.0'
+
+  GetUploadsIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref HttpApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${GetUploadsFunction.Arn}/invocations'
+      PayloadFormatVersion: '2.0'
+
+  # Routes
+  HealthRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: GET /health
+      Target: !Sub 'integrations/${HealthIntegration}'
+
+  PresignedRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: GET /upload-url
+      Target: !Sub 'integrations/${PresignedIntegration}'
+
+  GetUploadsRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: GET /uploads
+      Target: !Sub 'integrations/${GetUploadsIntegration}'
+
+Outputs:
+  ApiUrl:
+    Description: HTTP API Gateway URL
+    Value: !Sub 'https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com/prod'
+  BucketName:
+    Description: S3 uploads bucket
+    Value: !Ref UploadsBucket
+  QueueUrl:
+    Description: SQS queue URL
+    Value: !Ref UploadsQueue
+  TableName:
+    Description: DynamoDB table name
+    Value: !Ref UploadsTable

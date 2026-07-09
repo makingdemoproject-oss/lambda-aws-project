@@ -1,0 +1,522 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: EC2 -> EventBridge -> Lambda/SQS/SNS/ECS pipeline
+
+Parameters:
+  CodeBucket:
+    Type: String
+    Default: express-deploy-202606232329
+  CodeKey:
+    Type: String
+    Default: eventbridge-ecs-lambdas.zip
+  VpcId:
+    Type: String
+    Default: vpc-065599aca72278f93
+  Subnet1:
+    Type: String
+    Default: subnet-0e4f8a39a1e33b77e
+  Subnet2:
+    Type: String
+    Default: subnet-08f4b25fe38bdf09a
+
+Resources:
+
+  # ── DynamoDB ──────────────────────────────────────────
+  EventsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: ec2-eventbridge-events
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: eventId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: eventId
+          KeyType: HASH
+
+  # ── SQS ───────────────────────────────────────────────
+  EventsQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: ec2-events-queue-production
+      VisibilityTimeout: 60
+
+  # ── SQS for ECS ───────────────────────────────────────
+  EcsQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: ec2-events-ecs-queue-production
+      VisibilityTimeout: 60
+
+  # ── SNS ───────────────────────────────────────────────
+  EventsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: ec2-events-topic-production
+
+  # ── EventBridge Custom Bus ─────────────────────────────
+  EventBus:
+    Type: AWS::Events::EventBus
+    Properties:
+      Name: ec2-events-bus-production
+
+  # ── ECR Repository ────────────────────────────────────
+  EcrRepo:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: ec2-express-ecs-production
+      ImageScanningConfiguration:
+        ScanOnPush: true
+
+  # ── ECS Cluster ───────────────────────────────────────
+  EcsCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: ec2-events-cluster-production
+
+  # ── ECS Security Group ────────────────────────────────
+  EcsSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: ECS event processor security group
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 8080
+          ToPort: 8080
+          CidrIp: 0.0.0.0/0
+
+  # ── ECS IAM Roles ─────────────────────────────────────
+  EcsExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: ecs-event-execution-role-production
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+  EcsTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: ecs-event-task-role-production
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: ecs-task-policy
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action: [logs:CreateLogStream, logs:PutLogEvents]
+                Resource: '*'
+              - Effect: Allow
+                Action: [dynamodb:PutItem, dynamodb:Scan, dynamodb:GetItem]
+                Resource: !GetAtt EventsTable.Arn
+              - Effect: Allow
+                Action: [sqs:ReceiveMessage, sqs:DeleteMessage, sqs:GetQueueAttributes]
+                Resource: !GetAtt EcsQueue.Arn
+
+  # ── ECS Task Definition ───────────────────────────────
+  EcsLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /ecs/ec2-event-processor
+      RetentionInDays: 7
+
+  EcsTaskDef:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: ec2-event-processor
+      Cpu: '256'
+      Memory: '512'
+      NetworkMode: awsvpc
+      RequiresCompatibilities: [FARGATE]
+      ExecutionRoleArn: !GetAtt EcsExecutionRole.Arn
+      TaskRoleArn: !GetAtt EcsTaskRole.Arn
+      ContainerDefinitions:
+        - Name: event-processor
+          Image: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/ec2-express-ecs-production:latest'
+          PortMappings:
+            - ContainerPort: 8080
+          Environment:
+            - Name: PORT
+              Value: '8080'
+            - Name: ECS_TASK_ID
+              Value: fargate-task
+            - Name: ECS_QUEUE_URL
+              Value: !Ref EcsQueue
+            - Name: EVENTS_TABLE
+              Value: !Ref EventsTable
+            - Name: AWS_REGION
+              Value: !Ref AWS::Region
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: /ecs/ec2-event-processor
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ecs
+
+  # ── ECS Service ───────────────────────────────────────
+  EcsService:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: ec2-events-service-production
+      Cluster: !Ref EcsCluster
+      TaskDefinition: !Ref EcsTaskDef
+      DesiredCount: 1
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          Subnets: [!Ref Subnet1, !Ref Subnet2]
+          SecurityGroups: [!Ref EcsSG]
+          AssignPublicIp: ENABLED
+
+  # ── Lambda IAM Role ───────────────────────────────────
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: eventbridge-lambda-role-production
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: eventbridge-lambda-policy
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action: [logs:CreateLogGroup, logs:CreateLogStream, logs:PutLogEvents]
+                Resource: '*'
+              - Effect: Allow
+                Action: [events:PutEvents]
+                Resource: !GetAtt EventBus.Arn
+              - Effect: Allow
+                Action: [dynamodb:PutItem, dynamodb:Scan, dynamodb:GetItem]
+                Resource: !GetAtt EventsTable.Arn
+              - Effect: Allow
+                Action: [sqs:ReceiveMessage, sqs:DeleteMessage, sqs:GetQueueAttributes]
+                Resource: !GetAtt EventsQueue.Arn
+
+  # ── Lambda Functions ──────────────────────────────────
+  HealthFn:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: eb-ecs-health-production
+      Runtime: nodejs22.x
+      Handler: health.handler
+      Role: !GetAtt LambdaRole.Arn
+      Code: { S3Bucket: !Ref CodeBucket, S3Key: !Ref CodeKey }
+      Environment:
+        Variables:
+          EVENTS_TABLE: !Ref EventsTable
+          EVENT_BUS_NAME: !Ref EventBus
+
+  PublishEventFn:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: eb-ecs-publish-event-production
+      Runtime: nodejs22.x
+      Handler: publishEvent.handler
+      Role: !GetAtt LambdaRole.Arn
+      Timeout: 30
+      Code: { S3Bucket: !Ref CodeBucket, S3Key: !Ref CodeKey }
+      Environment:
+        Variables:
+          EVENTS_TABLE: !Ref EventsTable
+          EVENT_BUS_NAME: !Ref EventBus
+
+  EventHandlerFn:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: eb-ecs-event-handler-production
+      Runtime: nodejs22.x
+      Handler: eventHandler.handler
+      Role: !GetAtt LambdaRole.Arn
+      Timeout: 30
+      Code: { S3Bucket: !Ref CodeBucket, S3Key: !Ref CodeKey }
+      Environment:
+        Variables:
+          EVENTS_TABLE: !Ref EventsTable
+          EVENT_BUS_NAME: !Ref EventBus
+
+  SqsConsumerFn:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: eb-ecs-sqs-consumer-production
+      Runtime: nodejs22.x
+      Handler: sqsConsumer.handler
+      Role: !GetAtt LambdaRole.Arn
+      Timeout: 60
+      Code: { S3Bucket: !Ref CodeBucket, S3Key: !Ref CodeKey }
+      Environment:
+        Variables:
+          EVENTS_TABLE: !Ref EventsTable
+          EVENT_BUS_NAME: !Ref EventBus
+
+  SqsEventSource:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      EventSourceArn: !GetAtt EventsQueue.Arn
+      FunctionName: !GetAtt SqsConsumerFn.Arn
+      BatchSize: 5
+      FunctionResponseTypes: [ReportBatchItemFailures]
+
+  # SNS → Lambda → DynamoDB
+  SnsConsumerFn:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: eb-ecs-sns-consumer-production
+      Runtime: nodejs22.x
+      Handler: snsConsumer.handler
+      Role: !GetAtt LambdaRole.Arn
+      Timeout: 30
+      Code: { S3Bucket: !Ref CodeBucket, S3Key: !Ref CodeKey }
+      Environment:
+        Variables:
+          EVENTS_TABLE: !Ref EventsTable
+          EVENT_BUS_NAME: !Ref EventBus
+
+  SnsSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref EventsTopic
+      Protocol: lambda
+      Endpoint: !GetAtt SnsConsumerFn.Arn
+
+  SnsConsumerPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref SnsConsumerFn
+      Action: lambda:InvokeFunction
+      Principal: sns.amazonaws.com
+      SourceArn: !Ref EventsTopic
+
+  GetEventsFn:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: eb-ecs-get-events-production
+      Runtime: nodejs22.x
+      Handler: getEvents.handler
+      Role: !GetAtt LambdaRole.Arn
+      Code: { S3Bucket: !Ref CodeBucket, S3Key: !Ref CodeKey }
+      Environment:
+        Variables:
+          EVENTS_TABLE: !Ref EventsTable
+          EVENT_BUS_NAME: !Ref EventBus
+
+  # ── EventBridge Rules ─────────────────────────────────
+  EventBridgeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: eventbridge-targets-role-production
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: eb-targets-policy
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action: [lambda:InvokeFunction]
+                Resource: !GetAtt EventHandlerFn.Arn
+              - Effect: Allow
+                Action: [sqs:SendMessage]
+                Resource:
+                  - !GetAtt EventsQueue.Arn
+                  - !GetAtt EcsQueue.Arn
+              - Effect: Allow
+                Action: [sns:Publish]
+                Resource: !Ref EventsTopic
+
+  # Route all ec2.express events to Lambda + SQS + SNS
+  Ec2EventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: ec2-express-events-rule
+      EventBusName: !Ref EventBus
+      EventPattern:
+        source: ['ec2.express']
+      Targets:
+        - Id: LambdaTarget
+          Arn: !GetAtt EventHandlerFn.Arn
+        - Id: SqsTarget
+          Arn: !GetAtt EventsQueue.Arn
+          RoleArn: !GetAtt EventBridgeRole.Arn
+        - Id: SnsTarget
+          Arn: !Ref EventsTopic
+          RoleArn: !GetAtt EventBridgeRole.Arn
+        - Id: EcsQueueTarget
+          Arn: !GetAtt EcsQueue.Arn
+          RoleArn: !GetAtt EventBridgeRole.Arn
+
+  EventHandlerPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref EventHandlerFn
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt Ec2EventRule.Arn
+
+  # ── HTTP API Gateway ──────────────────────────────────
+  HttpApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: eventbridge-ecs-api-production
+      ProtocolType: HTTP
+      CorsConfiguration:
+        AllowOrigins: ['*']
+        AllowMethods: [GET, POST, OPTIONS]
+        AllowHeaders: ['*']
+
+  HttpApiStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref HttpApi
+      StageName: prod
+      AutoDeploy: true
+
+  HealthIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref HttpApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${HealthFn.Arn}/invocations'
+      PayloadFormatVersion: '2.0'
+
+  PublishIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref HttpApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${PublishEventFn.Arn}/invocations'
+      PayloadFormatVersion: '2.0'
+
+  GetEventsIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref HttpApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${GetEventsFn.Arn}/invocations'
+      PayloadFormatVersion: '2.0'
+
+  HealthRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: GET /health
+      Target: !Sub 'integrations/${HealthIntegration}'
+
+  PublishRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: POST /publish-event
+      Target: !Sub 'integrations/${PublishIntegration}'
+
+  GetEventsRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: GET /events
+      Target: !Sub 'integrations/${GetEventsIntegration}'
+
+  HealthPerm:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref HealthFn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${HttpApi}/*/*'
+
+  PublishPerm:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref PublishEventFn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${HttpApi}/*/*'
+
+  GetEventsPerm:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref GetEventsFn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${HttpApi}/*/*'
+
+  # ── CodeBuild ─────────────────────────────────────────
+  CodeBuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: eventbridge-codebuild-role-production
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: codebuild-policy
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action: [logs:CreateLogGroup, logs:CreateLogStream, logs:PutLogEvents]
+                Resource: '*'
+              - Effect: Allow
+                Action: [ecr:GetAuthorizationToken, ecr:BatchCheckLayerAvailability, ecr:GetDownloadUrlForLayer, ecr:BatchGetImage, ecr:InitiateLayerUpload, ecr:UploadLayerPart, ecr:CompleteLayerUpload, ecr:PutImage]
+                Resource: '*'
+              - Effect: Allow
+                Action: [ecs:UpdateService, ecs:DescribeServices]
+                Resource: '*'
+              - Effect: Allow
+                Action: [s3:GetObject, s3:PutObject, s3:GetBucketAcl, s3:GetBucketLocation]
+                Resource: '*'
+              - Effect: Allow
+                Action: [sts:GetCallerIdentity]
+                Resource: '*'
+
+  CodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: ec2-ecs-docker-build-production
+      ServiceRole: !GetAtt CodeBuildRole.Arn
+      Source:
+        Type: GITHUB
+        Location: https://github.com/makingdemoproject-oss/lambda-aws-project
+        BuildSpec: eventbridge-ecs/buildspec.yml
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/standard:7.0
+        PrivilegedMode: true
+      Artifacts:
+        Type: NO_ARTIFACTS
+
+Outputs:
+  ApiUrl:
+    Value: !Sub 'https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com/prod'
+  EcrRepo:
+    Value: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/ec2-express-ecs-production'
+  EcsCluster:
+    Value: !Ref EcsCluster
+  EventBusName:
+    Value: !Ref EventBus
+  DynamoTable:
+    Value: !Ref EventsTable

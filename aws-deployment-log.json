@@ -1,0 +1,99 @@
+{
+  "project": "lambda-aws-project",
+  "account": "527055790362",
+  "region": "ap-south-1",
+  "deployedAt": "2026-06-27",
+  "webApp": {
+    "url": "http://13.207.251.13",
+    "ec2InstanceId": "i-0dda96ea16a03281d",
+    "server": "nginx",
+    "deployBucket": "s3://express-deploy-202606232329/web-app-dist/",
+    "pages": {
+      "shop": "/",
+      "lambdaRdsDemo": "/aws-demo",
+      "s3SqsDynamoDB": "/s3-demo",
+      "eventBridge": "/eventbridge"
+    }
+  },
+  "stacks": {
+    "s3SqsLambdaDynamoDB": {
+      "cloudformationStack": "s3-sqs-lambda-dynamodb-production",
+      "status": "CREATE_COMPLETE",
+      "apiUrl": "https://7x5s0zdwi0.execute-api.ap-south-1.amazonaws.com/prod",
+      "endpoints": {
+        "presignedUrl": "GET /presigned-url?filename=file.csv&contentType=text/csv",
+        "listFiles": "GET /files",
+        "deleteFile": "DELETE /files/{key}",
+        "health": "GET /health"
+      },
+      "resources": {
+        "s3Bucket": "csv-uploads-527055790362-production",
+        "sqsQueue": "csv-uploads-queue-production",
+        "sqsQueueUrl": "https://sqs.ap-south-1.amazonaws.com/527055790362/csv-uploads-queue-production",
+        "dynamoTable": "csv-file-uploads",
+        "lambdas": [
+          "s3-presigned-url-production",
+          "s3-sqs-consumer-production",
+          "s3-list-files-production",
+          "s3-delete-file-production"
+        ]
+      },
+      "flow": "Browser → GET presigned URL → PUT direct to S3 → S3 Event → SQS → Lambda → DynamoDB"
+    },
+    "eventBridgeECS": {
+      "cloudformationStack": "eventbridge-ecs-production",
+      "status": "CREATE_COMPLETE",
+      "apiUrl": "https://glld8xowg5.execute-api.ap-south-1.amazonaws.com/prod",
+      "endpoints": {
+        "health": "GET /health",
+        "publishEvent": "POST /publish-event",
+        "getEvents": "GET /events"
+      },
+      "resources": {
+        "eventBus": "ec2-events-bus-production",
+        "eventRule": "ec2-express-events-rule",
+        "sqsQueue": "ec2-events-queue-production",
+        "snsTopic": "ec2-events-topic-production",
+        "dynamoTable": "ec2-eventbridge-events",
+        "ecrRepo": "527055790362.dkr.ecr.ap-south-1.amazonaws.com/ec2-express-ecs-production",
+        "ecsCluster": "ec2-events-cluster-production",
+        "ecsService": "ec2-events-service-production",
+        "codeBuildProject": "ec2-ecs-docker-build-production",
+        "lambdas": [
+          "eb-ecs-health-production",
+          "eb-ecs-publish-event-production",
+          "eb-ecs-event-handler-production",
+          "eb-ecs-sqs-consumer-production",
+          "eb-ecs-get-events-production"
+        ]
+      },
+      "eventBridgeTargets": [
+        { "id": "LambdaTarget", "type": "Lambda", "fn": "eb-ecs-event-handler-production" },
+        { "id": "SqsTarget",    "type": "SQS",    "queue": "ec2-events-queue-production" },
+        { "id": "SnsTarget",    "type": "SNS",    "topic": "ec2-events-topic-production" }
+      ],
+      "flow": "React → POST /publish-event → Lambda → EventBridge PutEvents → [Lambda + SQS→Lambda + SNS] → DynamoDB",
+      "ecsFlow": "CodeBuild → docker build → ECR push → ECS Fargate pull → Express app running on port 8080"
+    },
+    "cognitoAlbEc2": {
+      "description": "Existing stack - NOT modified",
+      "resources": {
+        "ec2Web": "i-0dda96ea16a03281d (nginx web app)",
+        "ec2Api1": "i-0df96941493b68f99 (express-ec2-role-production)",
+        "alb": "Cognito-protected ALB",
+        "rds": "PostgreSQL RDS",
+        "cognito": "User pool + App client"
+      }
+    }
+  },
+  "github": {
+    "repo": "https://github.com/makingdemoproject-oss/lambda-aws-project",
+    "branch": "main",
+    "commits": [
+      "6cc3270 - Update EventBridgePage with live API URL",
+      "0557a0d - Add EC2->EventBridge->Lambda/SQS/SNS/ECS pipeline",
+      "214a8cc - subquery (DB notes)"
+    ]
+  },
+  "demoCSV": "D:/lambda-project/lambda-aws-project/s3-sqs-lambda-dynamodb/demo-products.csv"
+}

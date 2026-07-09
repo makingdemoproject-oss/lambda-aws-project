@@ -1,0 +1,334 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: API Gateway (HTTP API) + Lambda Authorizer + EC2 Backend (15 routes)
+
+Parameters:
+  Ec2PublicIp:
+    Type: String
+    Default: "13.200.198.212"
+    Description: EC2 public IP running order-processing backend on port 3001
+
+  BackendPort:
+    Type: String
+    Default: "3001"
+
+  JwtSecret:
+    Type: String
+    Default: "order-api-secret-2024"
+    NoEcho: true
+
+Resources:
+
+  # ─── LAMBDA AUTHORIZER ───────────────────────────────────────────────────────
+  AuthorizerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: apigw-lambda-authorizer-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  AuthorizerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: order-api-lambda-authorizer
+      Runtime: nodejs20.x
+      Handler: index.handler
+      Role: !GetAtt AuthorizerRole.Arn
+      Timeout: 10
+      Environment:
+        Variables:
+          JWT_SECRET: !Ref JwtSecret
+      Code:
+        ZipFile: |
+          const jwt = require('jsonwebtoken');
+          const JWT_SECRET = process.env.JWT_SECRET || 'order-api-secret-2024';
+          exports.handler = async (event) => {
+            const authHeader = event.headers?.authorization || event.headers?.Authorization || '';
+            const token = authHeader.replace('Bearer ', '').trim();
+            if (!token) throw new Error('Unauthorized');
+            try {
+              const decoded = jwt.verify(token, JWT_SECRET);
+              return { isAuthorized: true, context: { userId: decoded.userId, name: decoded.name, role: decoded.role } };
+            } catch { throw new Error('Unauthorized'); }
+          };
+
+  AuthorizerPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt AuthorizerFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${OrderApi}/*"
+
+  # ─── HTTP API GATEWAY ─────────────────────────────────────────────────────────
+  OrderApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: order-processing-api-production
+      ProtocolType: HTTP
+      Description: HTTP API with Lambda Authorizer → EC2 Backend (15 routes)
+      CorsConfiguration:
+        AllowOrigins: ["*"]
+        AllowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+        AllowHeaders: ["Content-Type", "Authorization"]
+
+  # Lambda Authorizer
+  LambdaAuthorizer:
+    Type: AWS::ApiGatewayV2::Authorizer
+    Properties:
+      ApiId: !Ref OrderApi
+      AuthorizerType: REQUEST
+      AuthorizerUri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${AuthorizerFunction.Arn}/invocations"
+      Name: lambda-jwt-authorizer
+      IdentitySource:
+        - "$request.header.Authorization"
+      EnableSimpleResponses: true
+      AuthorizerPayloadFormatVersion: "2.0"
+
+  # Stage
+  ApiStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref OrderApi
+      StageName: prod
+      AutoDeploy: true
+      DefaultRouteSettings:
+        ThrottlingBurstLimit: 100
+        ThrottlingRateLimit: 50
+
+  # ─── HTTP INTEGRATIONS → EC2 (method-wise — console mein clearly dikhega) ────
+  IntegrationGET:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref OrderApi
+      IntegrationType: HTTP_PROXY
+      IntegrationMethod: GET
+      IntegrationUri: !Sub "http://${Ec2PublicIp}:${BackendPort}"
+      PayloadFormatVersion: "1.0"
+      TimeoutInMillis: 29000
+
+  IntegrationPOST:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref OrderApi
+      IntegrationType: HTTP_PROXY
+      IntegrationMethod: POST
+      IntegrationUri: !Sub "http://${Ec2PublicIp}:${BackendPort}"
+      PayloadFormatVersion: "1.0"
+      TimeoutInMillis: 29000
+
+  IntegrationPUT:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref OrderApi
+      IntegrationType: HTTP_PROXY
+      IntegrationMethod: PUT
+      IntegrationUri: !Sub "http://${Ec2PublicIp}:${BackendPort}"
+      PayloadFormatVersion: "1.0"
+      TimeoutInMillis: 29000
+
+  IntegrationDELETE:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref OrderApi
+      IntegrationType: HTTP_PROXY
+      IntegrationMethod: DELETE
+      IntegrationUri: !Sub "http://${Ec2PublicIp}:${BackendPort}"
+      PayloadFormatVersion: "1.0"
+      TimeoutInMillis: 29000
+
+  IntegrationPATCH:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref OrderApi
+      IntegrationType: HTTP_PROXY
+      IntegrationMethod: PATCH
+      IntegrationUri: !Sub "http://${Ec2PublicIp}:${BackendPort}"
+      PayloadFormatVersion: "1.0"
+      TimeoutInMillis: 29000
+
+  # ─── ROUTES ──────────────────────────────────────────────────────────────────
+
+  # ROUTE 1: GET /health (PUBLIC — no authorizer)
+  RouteHealth:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref OrderApi
+      RouteKey: "GET /health"
+      Target: !Sub "integrations/${IntegrationGET}"
+
+  # ROUTE 2: POST /auth/login (PUBLIC)
+  RouteAuthLogin:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref OrderApi
+      RouteKey: "POST /auth/login"
+      Target: !Sub "integrations/${IntegrationPOST}"
+
+  # ROUTE 3: GET /orders (PROTECTED)
+  RouteGetOrders:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref OrderApi
+      RouteKey: "GET /orders"
+      AuthorizerId: !Ref LambdaAuthorizer
+      AuthorizationType: CUSTOM
+      Target: !Sub "integrations/${IntegrationGET}"
+
+  # ROUTE 4: POST /orders (PROTECTED)
+  RouteCreateOrder:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref OrderApi
+      RouteKey: "POST /orders"
+      AuthorizerId: !Ref LambdaAuthorizer
+      AuthorizationType: CUSTOM
+      Target: !Sub "integrations/${IntegrationPOST}"
+
+  # ROUTE 5: GET /orders/{id} (PROTECTED)
+  RouteGetOrder:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref OrderApi
+      RouteKey: "GET /orders/{id}"
+      AuthorizerId: !Ref LambdaAuthorizer
+      AuthorizationType: CUSTOM
+      Target: !Sub "integrations/${IntegrationGET}"
+
+  # ROUTE 6: PUT /orders/{id} (PROTECTED)
+  RouteUpdateOrder:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref OrderApi
+      RouteKey: "PUT /orders/{id}"
+      AuthorizerId: !Ref LambdaAuthorizer
+      AuthorizationType: CUSTOM
+      Target: !Sub "integrations/${IntegrationPUT}"
+
+  # ROUTE 6b: PATCH /orders/{id} (PROTECTED — partial update)
+  RoutePatchOrder:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref OrderApi
+      RouteKey: "PATCH /orders/{id}"
+      AuthorizerId: !Ref LambdaAuthorizer
+      AuthorizationType: CUSTOM
+      Target: !Sub "integrations/${IntegrationPATCH}"
+
+  # ROUTE 7: DELETE /orders/{id} (PROTECTED)
+  RouteDeleteOrder:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref OrderApi
+      RouteKey: "DELETE /orders/{id}"
+      AuthorizerId: !Ref LambdaAuthorizer
+      AuthorizationType: CUSTOM
+      Target: !Sub "integrations/${IntegrationDELETE}"
+
+  # ROUTE 8: GET /products (PROTECTED)
+  RouteGetProducts:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref OrderApi
+      RouteKey: "GET /products"
+      AuthorizerId: !Ref LambdaAuthorizer
+      AuthorizationType: CUSTOM
+      Target: !Sub "integrations/${IntegrationGET}"
+
+  # ROUTE 9: POST /products (PROTECTED)
+  RouteCreateProduct:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref OrderApi
+      RouteKey: "POST /products"
+      AuthorizerId: !Ref LambdaAuthorizer
+      AuthorizationType: CUSTOM
+      Target: !Sub "integrations/${IntegrationPOST}"
+
+  # ROUTE 10: GET /products/{id} (PROTECTED)
+  RouteGetProduct:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref OrderApi
+      RouteKey: "GET /products/{id}"
+      AuthorizerId: !Ref LambdaAuthorizer
+      AuthorizationType: CUSTOM
+      Target: !Sub "integrations/${IntegrationGET}"
+
+  # ROUTE 11: PUT /products/{id} (PROTECTED)
+  RouteUpdateProduct:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref OrderApi
+      RouteKey: "PUT /products/{id}"
+      AuthorizerId: !Ref LambdaAuthorizer
+      AuthorizationType: CUSTOM
+      Target: !Sub "integrations/${IntegrationPUT}"
+
+  # ROUTE 11b: PATCH /products/{id} (PROTECTED — partial update)
+  RoutePatchProduct:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref OrderApi
+      RouteKey: "PATCH /products/{id}"
+      AuthorizerId: !Ref LambdaAuthorizer
+      AuthorizationType: CUSTOM
+      Target: !Sub "integrations/${IntegrationPATCH}"
+
+  # ROUTE 12: DELETE /products/{id} (PROTECTED)
+  RouteDeleteProduct:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref OrderApi
+      RouteKey: "DELETE /products/{id}"
+      AuthorizerId: !Ref LambdaAuthorizer
+      AuthorizationType: CUSTOM
+      Target: !Sub "integrations/${IntegrationDELETE}"
+
+  # ROUTE 13: GET /users (PROTECTED)
+  RouteGetUsers:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref OrderApi
+      RouteKey: "GET /users"
+      AuthorizerId: !Ref LambdaAuthorizer
+      AuthorizationType: CUSTOM
+      Target: !Sub "integrations/${IntegrationGET}"
+
+  # ROUTE 14: POST /users (PROTECTED)
+  RouteCreateUser:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref OrderApi
+      RouteKey: "POST /users"
+      AuthorizerId: !Ref LambdaAuthorizer
+      AuthorizationType: CUSTOM
+      Target: !Sub "integrations/${IntegrationPOST}"
+
+  # ROUTE 15: GET /users/{id} (PROTECTED)
+  RouteGetUser:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref OrderApi
+      RouteKey: "GET /users/{id}"
+      AuthorizerId: !Ref LambdaAuthorizer
+      AuthorizationType: CUSTOM
+      Target: !Sub "integrations/${IntegrationGET}"
+
+Outputs:
+  ApiEndpoint:
+    Value: !Sub "https://${OrderApi}.execute-api.${AWS::Region}.amazonaws.com/prod"
+    Description: API Gateway endpoint
+    Export:
+      Name: OrderApiEndpoint
+
+  ApiId:
+    Value: !Ref OrderApi
+
+  AuthorizerFunctionArn:
+    Value: !GetAtt AuthorizerFunction.Arn

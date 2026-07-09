@@ -1,15 +1,58 @@
 {
   "name": "rbac-service",
   "version": "1.0.0",
-  "description": "RBAC auth service — validates credentials against PostgreSQL, used by Cognito custom auth",
-  "main": "index.js",
+  "description": "Auth + RBAC service — owns the rbac schema (users, roles, permissions, menus). Issues JWTs.",
+  "main": "src/server.js",
+  "engines": {
+    "node": ">=18.0.0"
+  },
   "scripts": {
-    "start": "node index.js"
+    "start": "pm2-runtime start ecosystem.config.js --env production",
+    "dev": "nodemon src/server.js",
+    "db:create": "sequelize-cli db:create",
+    "db:drop": "sequelize-cli db:drop",
+    "db:migrate": "sequelize-cli db:migrate",
+    "db:migrate:undo": "sequelize-cli db:migrate:undo",
+    "db:seed": "sequelize-cli db:seed:all",
+    "db:reset": "sequelize-cli db:drop && sequelize-cli db:create && npm run db:migrate && npm run db:seed",
+    "lint": "eslint src --ext .js"
   },
   "dependencies": {
-    "express": "^4.18.2",
-    "bcrypt": "^5.1.1",
-    "pg": "^8.11.3",
-    "jsonwebtoken": "^9.0.2"
+    "@aws-sdk/client-sns": "^3.1073.0",
+    "@opentelemetry/api": "^1.9.0",
+    "@opentelemetry/auto-instrumentations-node": "^0.50.0",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.52.0",
+    "@opentelemetry/instrumentation-pg": "^0.43.0",
+    "@opentelemetry/resources": "^1.25.0",
+    "@opentelemetry/sdk-node": "^0.52.0",
+    "@opentelemetry/semantic-conventions": "^1.25.0",
+    "bcryptjs": "^2.4.3",
+    "compression": "^1.7.4",
+    "cookie-parser": "^1.4.6",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "express-rate-limit": "^7.4.0",
+    "helmet": "^7.1.0",
+    "hpp": "^0.2.3",
+    "ioredis": "^5.4.1",
+    "joi": "^17.13.3",
+    "jsonwebtoken": "^9.0.2",
+    "morgan": "^1.10.0",
+    "passport": "^0.7.0",
+    "passport-jwt": "^4.0.1",
+    "pg": "^8.12.0",
+    "pg-hstore": "^2.3.4",
+    "pm2": "^5.4.2",
+    "rate-limit-redis": "^4.2.0",
+    "sequelize": "^6.37.3",
+    "swagger-ui-express": "^5.0.1",
+    "uuid": "^10.0.0",
+    "winston": "^3.13.1"
+  },
+  "devDependencies": {
+    "eslint": "^8.57.0",
+    "nodemon": "^3.1.4",
+    "sequelize-cli": "^6.6.2"
   }
 }

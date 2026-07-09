@@ -1,0 +1,103 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rbac-config
+  namespace: microservices
+data:
+  NODE_ENV: "production"
+  PORT: "4000"
+  API_PREFIX: "/api/v1"
+  DB_HOST: "13.207.251.13"
+  DB_PORT: "5432"
+  DB_NAME: "orderdb"
+  DB_SCHEMA: "rbac"
+  DB_SSL: "false"
+  REDIS_URL: "redis://redis.microservices.svc.cluster.local:6379"
+  RABBITMQ_URL: "amqp://guest:guest@rabbitmq.microservices.svc.cluster.local:5672"
+  RBAC_API_URL: "http://rbac.microservices.svc.cluster.local:4000/api/v1"
+  LOG_LEVEL: "info"
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: rbac-secrets
+  namespace: microservices
+type: Opaque
+stringData:
+  DB_USERNAME: "lambdauser"
+  DB_PASSWORD: "Lambda@1234"
+  JWT_ACCESS_SECRET: "your-jwt-access-secret-change-me"
+  JWT_REFRESH_SECRET: "your-jwt-refresh-secret-change-me"
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rbac
+  namespace: microservices
+  labels:
+    app: rbac
+spec:
+  selector:
+    app: rbac
+  ports:
+    - port: 4000
+      targetPort: 4000
+      name: http
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rbac
+  namespace: microservices
+  labels:
+    app: rbac
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: rbac
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: rbac
+    spec:
+      imagePullSecrets:
+        - name: gitlab-registry-secret
+      containers:
+        - name: rbac
+          image: registry.gitlab.com/makingdemoproject/rbac-service:latest
+          ports:
+            - containerPort: 4000
+          envFrom:
+            - configMapRef:
+                name: rbac-config
+            - secretRef:
+                name: rbac-secrets
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          livenessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: 4000
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: 4000
+            initialDelaySeconds: 10
+            periodSeconds: 10
