@@ -1,0 +1,378 @@
+﻿{
+    "title":  "EventBridge Complete Flow Log - All Targets",
+    "generatedAt":  "2026-06-27T16:12:35Z",
+    "apiUrl":  "https://glld8xowg5.execute-api.ap-south-1.amazonaws.com/prod",
+    "stack":  "eventbridge-ecs-production",
+    "region":  "ap-south-1",
+    "dynamoTable":  "ec2-eventbridge-events",
+    "totalEvents":  18,
+    "architecture":  {
+                         "flow":  "React UI → POST /publish-event → Lambda → EventBridge PutEvents → ec2-events-bus-production",
+                         "targets":  [
+                                         {
+                                             "id":  "1",
+                                             "name":  "Lambda",
+                                             "fn":  "eb-ecs-event-handler-production",
+                                             "path":  "EventBridge → Lambda → DynamoDB",
+                                             "target_field":  "Lambda"
+                                         },
+                                         {
+                                             "id":  "2",
+                                             "name":  "SQS",
+                                             "fn":  "eb-ecs-sqs-consumer-production",
+                                             "path":  "EventBridge → SQS → Lambda → DynamoDB",
+                                             "target_field":  "SQS→Lambda"
+                                         },
+                                         {
+                                             "id":  "3",
+                                             "name":  "SNS",
+                                             "fn":  "eb-ecs-sns-consumer-production",
+                                             "path":  "EventBridge → SNS → Lambda → DynamoDB",
+                                             "target_field":  "SNS→Lambda"
+                                         },
+                                         {
+                                             "id":  "4",
+                                             "name":  "ECS Fargate",
+                                             "fn":  "ec2-events-cluster-production",
+                                             "path":  "Fargate container running Express on :8080",
+                                             "target_field":  "ECS (log only)"
+                                         }
+                                     ],
+                         "lambdaRuntime":  "nodejs22.x",
+                         "ecrImage":  "527055790362.dkr.ecr.ap-south-1.amazonaws.com/ec2-express-ecs-production:latest",
+                         "codebuild":  "ec2-ecs-docker-build-production"
+                     },
+    "components_status":  {
+                              "publishEvent_lambda":  "SUCCESS - eb-ecs-publish-event-production",
+                              "eventBridge_bus":  "SUCCESS - ec2-events-bus-production routed to 3 targets",
+                              "lambda_target":  "SUCCESS - eb-ecs-event-handler-production saved to DynamoDB",
+                              "sqs_lambda_target":  "SUCCESS - SQS queue → eb-ecs-sqs-consumer-production → DynamoDB",
+                              "sns_lambda_target":  "SUCCESS - SNS topic → eb-ecs-sns-consumer-production → DynamoDB",
+                              "ecs_fargate":  "RUNNING - Express app on Fargate :8080 (CloudWatch: /ecs/ec2-event-processor)",
+                              "codebuild":  "READY - GitHub → docker build → ECR push → ECS force-new-deployment"
+                          },
+    "events":  [
+                   {
+                       "eventId":  "d5adee62-a205-465f-a204-9c8af0831fae",
+                       "detail":  {
+                                      "amount":  "45000",
+                                      "product":  "Laptop Pro",
+                                      "orderId":  "ORD-1782556896480",
+                                      "eventType":  "PaymentSuccess",
+                                      "source":  "ec2-express-server",
+                                      "userId":  "test-user",
+                                      "timestamp":  "2026-06-27T10:41:36.480Z"
+                                  },
+                       "target":  "SNSâ†’Lambda",
+                       "receivedAt":  "2026-06-27T10:41:37.297Z",
+                       "source":  "ec2.express",
+                       "snsMessageId":  "3c5d7f1e-0367-5c4e-96ca-1da7a846040a",
+                       "detailType":  "PaymentSuccess"
+                   },
+                   {
+                       "eventId":  "c402f7cb-a417-4787-8e5d-d58e61e03a7d",
+                       "detail":  {
+                                      "amount":  "45000",
+                                      "product":  "Laptop Pro",
+                                      "orderId":  "ORD-1782556896480",
+                                      "eventType":  "PaymentSuccess",
+                                      "source":  "ec2-express-server",
+                                      "userId":  "test-user",
+                                      "timestamp":  "2026-06-27T10:41:36.480Z"
+                                  },
+                       "sqsMsgId":  "acd0625f-32ff-4fa4-a6c1-f9bf64f14dda",
+                       "target":  "SQSâ†’Lambda",
+                       "receivedAt":  "2026-06-27T10:41:37.243Z",
+                       "source":  "ec2.express",
+                       "detailType":  "PaymentSuccess"
+                   },
+                   {
+                       "eventId":  "21af573f-45e3-4678-9fd5-9ace730b6bf2",
+                       "detail":  {
+                                      "amount":  "45000",
+                                      "product":  "Laptop Pro",
+                                      "orderId":  "ORD-1782556896480",
+                                      "eventType":  "PaymentSuccess",
+                                      "source":  "ec2-express-server",
+                                      "userId":  "test-user",
+                                      "timestamp":  "2026-06-27T10:41:36.480Z"
+                                  },
+                       "target":  "Lambda",
+                       "receivedAt":  "2026-06-27T10:41:37.044Z",
+                       "account":  "527055790362",
+                       "source":  "ec2.express",
+                       "time":  "2026-06-27T10:41:36Z",
+                       "region":  "ap-south-1",
+                       "detailType":  "PaymentSuccess"
+                   },
+                   {
+                       "eventId":  "5dc999f3-c5e6-42ec-9dfc-9d123ab6c29d",
+                       "detail":  {
+                                      "amount":  "25000",
+                                      "product":  "Tablet Air",
+                                      "orderId":  "ORD-1782556848056",
+                                      "eventType":  "OrderCreated",
+                                      "source":  "ec2-express-server",
+                                      "userId":  "user-demo",
+                                      "timestamp":  "2026-06-27T10:40:48.056Z"
+                                  },
+                       "target":  "SNSâ†’Lambda",
+                       "receivedAt":  "2026-06-27T10:40:49.315Z",
+                       "source":  "ec2.express",
+                       "snsMessageId":  "e493ac3e-9dba-59f2-8e3e-ce87374a6a7a",
+                       "detailType":  "OrderCreated"
+                   },
+                   {
+                       "eventId":  "cdd0525f-4cad-4059-8258-e33d4e85bdd6",
+                       "detail":  {
+                                      "amount":  "25000",
+                                      "product":  "Tablet Air",
+                                      "orderId":  "ORD-1782556848056",
+                                      "eventType":  "OrderCreated",
+                                      "source":  "ec2-express-server",
+                                      "userId":  "user-demo",
+                                      "timestamp":  "2026-06-27T10:40:48.056Z"
+                                  },
+                       "sqsMsgId":  "e9c2ec1a-a12b-4f03-9bc4-6bde79ebde95",
+                       "target":  "SQSâ†’Lambda",
+                       "receivedAt":  "2026-06-27T10:40:49.209Z",
+                       "source":  "ec2.express",
+                       "detailType":  "OrderCreated"
+                   },
+                   {
+                       "eventId":  "68951313-8acf-4222-afe3-565c2fdd3f81",
+                       "detail":  {
+                                      "amount":  "25000",
+                                      "product":  "Tablet Air",
+                                      "orderId":  "ORD-1782556848056",
+                                      "eventType":  "OrderCreated",
+                                      "source":  "ec2-express-server",
+                                      "userId":  "user-demo",
+                                      "timestamp":  "2026-06-27T10:40:48.056Z"
+                                  },
+                       "target":  "Lambda",
+                       "receivedAt":  "2026-06-27T10:40:49.204Z",
+                       "account":  "527055790362",
+                       "source":  "ec2.express",
+                       "time":  "2026-06-27T10:40:48Z",
+                       "region":  "ap-south-1",
+                       "detailType":  "OrderCreated"
+                   },
+                   {
+                       "eventId":  "07137138-297c-49e1-864d-dad50f5a6161",
+                       "detail":  {
+                                      "amount":  "25000",
+                                      "product":  "Laptop Pro",
+                                      "orderId":  "ORD-1782556824897",
+                                      "eventType":  "OrderCreated",
+                                      "source":  "ec2-express-server",
+                                      "userId":  "user-demo",
+                                      "timestamp":  "2026-06-27T10:40:24.897Z"
+                                  },
+                       "target":  "Lambda",
+                       "receivedAt":  "2026-06-27T10:40:25.628Z",
+                       "account":  "527055790362",
+                       "source":  "ec2.express",
+                       "time":  "2026-06-27T10:40:25Z",
+                       "region":  "ap-south-1",
+                       "detailType":  "OrderCreated"
+                   },
+                   {
+                       "eventId":  "644dbceb-22a7-4660-9e4d-2386d017dc3f",
+                       "detail":  {
+                                      "amount":  "25000",
+                                      "product":  "Laptop Pro",
+                                      "orderId":  "ORD-1782556824897",
+                                      "eventType":  "OrderCreated",
+                                      "source":  "ec2-express-server",
+                                      "userId":  "user-demo",
+                                      "timestamp":  "2026-06-27T10:40:24.897Z"
+                                  },
+                       "sqsMsgId":  "21931c3f-ae2e-496b-8edf-bb58a9e55bf2",
+                       "target":  "SQSâ†’Lambda",
+                       "receivedAt":  "2026-06-27T10:40:25.586Z",
+                       "source":  "ec2.express",
+                       "detailType":  "OrderCreated"
+                   },
+                   {
+                       "eventId":  "d8defeef-484b-4900-bc96-bcdc6bee52d8",
+                       "detail":  {
+                                      "amount":  "25000",
+                                      "product":  "Laptop Pro",
+                                      "orderId":  "ORD-1782556545597",
+                                      "eventType":  "OrderCreated",
+                                      "source":  "ec2-express-server",
+                                      "userId":  "user-demo",
+                                      "timestamp":  "2026-06-27T10:35:45.597Z"
+                                  },
+                       "target":  "Lambda",
+                       "receivedAt":  "2026-06-27T10:35:46.845Z",
+                       "account":  "527055790362",
+                       "source":  "ec2.express",
+                       "time":  "2026-06-27T10:35:46Z",
+                       "region":  "ap-south-1",
+                       "detailType":  "OrderCreated"
+                   },
+                   {
+                       "eventId":  "e744cea6-4689-44e8-bd38-0c731e990b0f",
+                       "detail":  {
+                                      "amount":  "25000",
+                                      "product":  "Laptop Pro",
+                                      "orderId":  "ORD-1782556545597",
+                                      "eventType":  "OrderCreated",
+                                      "source":  "ec2-express-server",
+                                      "userId":  "user-demo",
+                                      "timestamp":  "2026-06-27T10:35:45.597Z"
+                                  },
+                       "sqsMsgId":  "f53c22eb-5280-41bc-89b0-41d8d9f90d01",
+                       "target":  "SQSâ†’Lambda",
+                       "receivedAt":  "2026-06-27T10:35:46.822Z",
+                       "source":  "ec2.express",
+                       "detailType":  "OrderCreated"
+                   },
+                   {
+                       "eventId":  "33d8416f-4fd5-450a-83f9-286146187c71",
+                       "detail":  {
+                                      "amount":  "25000",
+                                      "product":  "Smart Watch",
+                                      "orderId":  "ORD-1782550976645",
+                                      "eventType":  "PaymentSuccess",
+                                      "source":  "ec2-express-server",
+                                      "userId":  "user-demo",
+                                      "timestamp":  "2026-06-27T09:02:56.645Z"
+                                  },
+                       "target":  "Lambda",
+                       "receivedAt":  "2026-06-27T09:02:57.183Z",
+                       "account":  "527055790362",
+                       "source":  "ec2.express",
+                       "time":  "2026-06-27T09:02:56Z",
+                       "region":  "ap-south-1",
+                       "detailType":  "PaymentSuccess"
+                   },
+                   {
+                       "eventId":  "d3dfc3b7-cb69-42a2-ab9c-d11d54e43016",
+                       "detail":  {
+                                      "amount":  "25000",
+                                      "product":  "Smart Watch",
+                                      "orderId":  "ORD-1782550976645",
+                                      "eventType":  "PaymentSuccess",
+                                      "source":  "ec2-express-server",
+                                      "userId":  "user-demo",
+                                      "timestamp":  "2026-06-27T09:02:56.645Z"
+                                  },
+                       "sqsMsgId":  "d58eb582-0a08-4bb1-b7a8-f39086ca3bb4",
+                       "target":  "SQSâ†’Lambda",
+                       "receivedAt":  "2026-06-27T09:02:57.009Z",
+                       "source":  "ec2.express",
+                       "detailType":  "PaymentSuccess"
+                   },
+                   {
+                       "eventId":  "477d181d-1a80-4eaa-bba0-b7c086a41ae1",
+                       "detail":  {
+                                      "amount":  "25000",
+                                      "product":  "Laptop Pro",
+                                      "orderId":  "ORD-1782550959145",
+                                      "eventType":  "OrderCreated",
+                                      "source":  "ec2-express-server",
+                                      "userId":  "user-demo",
+                                      "timestamp":  "2026-06-27T09:02:39.145Z"
+                                  },
+                       "target":  "Lambda",
+                       "receivedAt":  "2026-06-27T09:02:39.863Z",
+                       "account":  "527055790362",
+                       "source":  "ec2.express",
+                       "time":  "2026-06-27T09:02:39Z",
+                       "region":  "ap-south-1",
+                       "detailType":  "OrderCreated"
+                   },
+                   {
+                       "eventId":  "59a3b66a-9de3-4dc8-8494-3137d33b5b79",
+                       "detail":  {
+                                      "amount":  "25000",
+                                      "product":  "Laptop Pro",
+                                      "orderId":  "ORD-1782550959145",
+                                      "eventType":  "OrderCreated",
+                                      "source":  "ec2-express-server",
+                                      "userId":  "user-demo",
+                                      "timestamp":  "2026-06-27T09:02:39.145Z"
+                                  },
+                       "sqsMsgId":  "280a6aeb-eef5-4ad9-bc0e-df75fc37378f",
+                       "target":  "SQSâ†’Lambda",
+                       "receivedAt":  "2026-06-27T09:02:39.848Z",
+                       "source":  "ec2.express",
+                       "detailType":  "OrderCreated"
+                   },
+                   {
+                       "eventId":  "f5031811-536f-488d-b7cf-31ab31e13013",
+                       "detail":  {
+                                      "amount":  "25000",
+                                      "product":  "Laptop Pro",
+                                      "orderId":  "ORD-1782550933694",
+                                      "eventType":  "OrderCreated",
+                                      "source":  "ec2-express-server",
+                                      "userId":  "user-demo",
+                                      "timestamp":  "2026-06-27T09:02:13.694Z"
+                                  },
+                       "sqsMsgId":  "4ad1bd38-6de3-4bd2-8a21-8d0db2ba94d4",
+                       "target":  "SQSâ†’Lambda",
+                       "receivedAt":  "2026-06-27T09:02:15.032Z",
+                       "source":  "ec2.express",
+                       "detailType":  "OrderCreated"
+                   },
+                   {
+                       "eventId":  "ad29702d-edd5-4da5-ab69-001d5cfb08c0",
+                       "detail":  {
+                                      "amount":  "25000",
+                                      "product":  "Laptop Pro",
+                                      "orderId":  "ORD-1782550933694",
+                                      "eventType":  "OrderCreated",
+                                      "source":  "ec2-express-server",
+                                      "userId":  "user-demo",
+                                      "timestamp":  "2026-06-27T09:02:13.694Z"
+                                  },
+                       "target":  "Lambda",
+                       "receivedAt":  "2026-06-27T09:02:14.996Z",
+                       "account":  "527055790362",
+                       "source":  "ec2.express",
+                       "time":  "2026-06-27T09:02:14Z",
+                       "region":  "ap-south-1",
+                       "detailType":  "OrderCreated"
+                   },
+                   {
+                       "eventId":  "7e7afbfd-45ba-43c7-96b4-8c9ddc983205",
+                       "detail":  {
+                                      "amount":  "25000",
+                                      "product":  "Smartphone X12",
+                                      "orderId":  "ORD-1782550362717",
+                                      "eventType":  "OrderCreated",
+                                      "source":  "ec2-express-server",
+                                      "userId":  "user-demo",
+                                      "timestamp":  "2026-06-27T08:52:42.717Z"
+                                  },
+                       "sqsMsgId":  "09542472-edf2-4a6f-bcac-034b94098797",
+                       "target":  "SQSâ†’Lambda",
+                       "receivedAt":  "2026-06-27T08:52:43.918Z",
+                       "source":  "ec2.express",
+                       "detailType":  "OrderCreated"
+                   },
+                   {
+                       "eventId":  "341487fc-8c6c-4308-a7b4-429379c839b4",
+                       "detail":  {
+                                      "amount":  "25000",
+                                      "product":  "Smartphone X12",
+                                      "orderId":  "ORD-1782550362717",
+                                      "eventType":  "OrderCreated",
+                                      "source":  "ec2-express-server",
+                                      "userId":  "user-demo",
+                                      "timestamp":  "2026-06-27T08:52:42.717Z"
+                                  },
+                       "target":  "Lambda",
+                       "receivedAt":  "2026-06-27T08:52:43.893Z",
+                       "account":  "527055790362",
+                       "source":  "ec2.express",
+                       "time":  "2026-06-27T08:52:43Z",
+                       "region":  "ap-south-1",
+                       "detailType":  "OrderCreated"
+                   }
+               ]
+}

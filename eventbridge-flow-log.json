@@ -1,0 +1,86 @@
+{
+  "flowName": "EC2 → EventBridge → Lambda / SQS / SNS / ECS",
+  "eventFired": {
+    "orderId": "ORD-1782550362717",
+    "eventType": "OrderCreated",
+    "product": "Smartphone X12",
+    "amount": "25000",
+    "timestamp": "2026-06-27T08:52:42.717Z",
+    "source": "ec2-express-server"
+  },
+  "components": {
+    "1_publishEvent_Lambda": {
+      "name": "eb-ecs-publish-event-production",
+      "status": "SUCCESS",
+      "action": "React UI → POST /publish-event → Lambda called EventBridge PutEvents",
+      "requestId": "8e053162-26b6-4193-bd74-d83b110e41fa",
+      "duration_ms": 613,
+      "log": "START → PutEvents to ec2-events-bus-production → END"
+    },
+    "2_eventBridge": {
+      "name": "ec2-events-bus-production",
+      "status": "SUCCESS",
+      "rule": "ec2-express-events-rule",
+      "eventId": "9a169ed1-e487-a044-7414-5050e3ae9eae",
+      "action": "Routed event to 3 targets simultaneously",
+      "targets": ["Lambda", "SQS", "SNS"]
+    },
+    "3_lambda_target": {
+      "name": "eb-ecs-event-handler-production",
+      "status": "SUCCESS",
+      "requestId": "52584487-5867-4d69-b7e6-131db3352b3e",
+      "duration_ms": 704,
+      "log": "EventBridge event received → Stored to DynamoDB: 341487fc-8c6c-4308-a7b4-429379c839b4",
+      "dynamoId": "341487fc-8c6c-4308-a7b4-429379c839b4",
+      "target": "Lambda"
+    },
+    "4_sqs_target": {
+      "name": "ec2-events-queue-production → eb-ecs-sqs-consumer-production",
+      "status": "SUCCESS",
+      "requestId": "2372cc8a-0f80-55ad-b0c3-ae339e0789c1",
+      "duration_ms": 986,
+      "log": "SQS event stored: 7e7afbfd-45ba-43c7-96b4-8c9ddc983205",
+      "dynamoId": "7e7afbfd-45ba-43c7-96b4-8c9ddc983205",
+      "target": "SQS→Lambda"
+    },
+    "5_sns_target": {
+      "name": "ec2-events-topic-production",
+      "status": "SUCCESS",
+      "action": "EventBridge published to SNS topic — all subscribers notified"
+    },
+    "6_ecs_fargate": {
+      "name": "ec2-events-cluster-production / ec2-events-service-production",
+      "status": "RUNNING",
+      "log": "ECS event processor running on :8080",
+      "image": "527055790362.dkr.ecr.ap-south-1.amazonaws.com/ec2-express-ecs-production:latest",
+      "imageSizeMB": 47,
+      "imagePushedAt": "2026-06-27T13:51:34+05:30",
+      "port": 8080
+    }
+  },
+  "dynamoDB": {
+    "table": "ec2-eventbridge-events",
+    "recordsInserted": 2,
+    "records": [
+      { "eventId": "341487fc-8c6c-4308-a7b4-429379c839b4", "target": "Lambda",     "detailType": "OrderCreated" },
+      { "eventId": "7e7afbfd-45ba-43c7-96b4-8c9ddc983205", "target": "SQS→Lambda", "detailType": "OrderCreated" }
+    ]
+  },
+  "ecr": {
+    "repo": "ec2-express-ecs-production",
+    "region": "ap-south-1",
+    "images": [
+      { "tag": "latest", "sizeMB": 47, "pushedAt": "2026-06-27T13:51:34+05:30", "app": "Express Node.js app" },
+      { "tag": null,     "sizeMB": 44, "pushedAt": "2026-06-27T13:42:27+05:30", "app": "node:18-alpine placeholder" }
+    ]
+  },
+  "summary": {
+    "publishEvent": "✅ Lambda called EventBridge",
+    "eventBridge":  "✅ Routed to 3 targets",
+    "lambdaTarget": "✅ Stored in DynamoDB (target=Lambda)",
+    "sqsTarget":    "✅ SQS → Lambda → DynamoDB (target=SQS→Lambda)",
+    "snsTarget":    "✅ Published to SNS topic",
+    "ecsApp":       "✅ Express running on Fargate :8080",
+    "ecr":          "✅ 2 images in ECR (latest = Express app)"
+  }
+}
