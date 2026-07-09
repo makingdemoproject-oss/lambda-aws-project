@@ -1,0 +1,24 @@
+⚠️  IMPORTANT — YEH FILES GIT MEIN COMMIT MAT KARNA
+
+privkey.pem   → Private Key hai — SECRET rakho, kabhi share mat karo
+fullchain.pem → Public cert hai — safe hai lekin phir bhi git se bahar rakho
+
+.gitignore mein yeh add karo:
+------------------------------
+ssl-cert-nginx/privkey.pem
+ssl-cert-nginx/fullchain.pem
+ssl-cert-nginx/*.pem
+------------------------------
+
+Agar galti se commit ho gaya to:
+1. Turant Let's Encrypt certificate revoke karo:
+   certbot revoke --cert-name firstbyrajesh.duckdns.org
+2. Naya certificate lo:
+   certbot certonly --nginx -d firstbyrajesh.duckdns.org
+3. Git history se remove karo (git filter-branch)
+
+Certificate info:
+- Domain  : firstbyrajesh.duckdns.org
+- Expires : 2026-09-27
+- Auto-renew : Certbot cron set hai (khud renew karega)
+- EC2     : 13.207.251.13 (i-0dda96ea16a03281d)
