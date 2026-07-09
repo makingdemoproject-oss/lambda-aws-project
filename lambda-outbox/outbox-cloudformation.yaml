@@ -189,6 +189,7 @@ Resources:
       Action: lambda:InvokeFunction
       Principal: apigateway.amazonaws.com
       SourceAccount: !Ref AccountId
+      SourceArn: !Sub "arn:aws:execute-api:ap-south-1:${AccountId}:${ExistingApiId}/*"
 
   OutboxWorkerEventBridgePermission:
     Type: AWS::Lambda::Permission
