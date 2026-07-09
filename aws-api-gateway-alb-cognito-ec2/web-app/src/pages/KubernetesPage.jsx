@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react';
 
-const K8S_URL = 'http://13.201.138.12:30080';
+const isHttps = () => window.location.protocol === 'https:';
+const K8S_URL      = isHttps() ? 'https://firstbyrajesh.duckdns.org/proxy-k3s-orders'   : 'http://13.201.138.12:30080';
+const K8S_PRODUCTS = isHttps() ? 'https://firstbyrajesh.duckdns.org/proxy-k3s-products' : 'http://13.201.138.12:30081';
 
 const PAGE_STYLE = { fontFamily: 'Inter, system-ui, sans-serif', background: '#f8fafc', minHeight: '100vh', color: '#0f172a' };
 const SECTION = { background: '#fff', borderRadius: 12, padding: 24, boxShadow: '0 1px 4px rgba(0,0,0,0.08)', marginBottom: 20 };
@@ -425,7 +427,7 @@ function PodToPodSection() {
   const [results, setResults] = useState({});
   const [loading, setLoading] = useState('');
 
-  const ORDERS_URL = 'http://13.201.138.12:30080';
+  const ORDERS_URL = K8S_URL;
   const call = async (key, path, method = 'GET', body = null) => {
     setLoading(key);
     try {
@@ -595,7 +597,7 @@ function ServiceTester() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const svc = SERVICES[activeTab];
-  const baseUrl = `http://13.201.138.12:${svc.port}`;
+  const baseUrl = svc.port === 30081 ? K8S_PRODUCTS : K8S_URL;
 
   const run = async (route) => {
     setLoading(true); setError('');
@@ -1083,6 +1085,18 @@ export default function KubernetesPage() {
               <pre style={{ fontFamily: 'inherit', fontSize: 12, color: '#334155', whiteSpace: 'pre-wrap', margin: 0, lineHeight: 1.7 }}>{c.body}</pre>
             </div>
           ))}
+        </div>
+
+        {/* Route 53 Link */}
+        <div style={{ background: 'linear-gradient(135deg, #7c3aed15, #0891b215)', border: '1px solid #7c3aed30', borderRadius: 12, padding: 20, textAlign: 'center', marginTop: 8 }}>
+          <div style={{ fontSize: 18, marginBottom: 6 }}>🌐</div>
+          <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 4 }}>Route 53 + ALB DNS Routing</div>
+          <div style={{ color: '#64748b', fontSize: 13, marginBottom: 12 }}>
+            Subdomain → ALB → Pod routing. nip.io free DNS se live demo — Host-based routing ka concept samjho.
+          </div>
+          <a href="/route53" style={{ background: '#7c3aed', color: '#fff', padding: '10px 24px', borderRadius: 8, textDecoration: 'none', fontSize: 14, fontWeight: 600 }}>
+            Route 53 Demo dekho →
+          </a>
         </div>
 
       </div>

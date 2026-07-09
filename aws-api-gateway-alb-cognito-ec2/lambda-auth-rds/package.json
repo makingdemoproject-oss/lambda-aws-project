@@ -4,6 +4,8 @@
   "description": "Lambda Authorizer + RDS auth — separate from Cognito setup",
   "main": "src/functions/health.js",
   "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.1080.0",
+    "@aws-sdk/util-dynamodb": "^3.996.5",
     "bcryptjs": "^2.4.3",
     "jsonwebtoken": "^9.0.2",
     "pg": "^8.12.0"
