@@ -54,6 +54,7 @@ Resources:
     Type: AWS::SQS::Queue
     Properties:
       QueueName: !Sub event-buffer-dlq-${Environment}
+      VisibilityTimeout: 120
       MessageRetentionPeriod: 1209600  # 14 days
       Tags:
         - Key: Project
@@ -213,6 +214,37 @@ Resources:
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
 
+  # ─── IAM Role — Lambda 4 (DLQ Archiver) ─────────────────────────────────────
+  Lambda4Role:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub lambda4-dlq-archiver-role-${Environment}
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaSQSQueueExecutionRole
+      Policies:
+        - PolicyName: Lambda4S3Policy
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:PutObjectAcl
+                Resource: !Sub arn:aws:s3:::event-dlq-archival-${Environment}-${AWS::AccountId}/*
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                Resource: !GetAtt EventBufferDLQ.Arn
+
   # ─── Lambda 1 — Message Processor A ─────────────────────────────────────────
   Lambda1Processor:
     Type: AWS::Lambda::Function
@@ -306,6 +338,38 @@ Resources:
       Tags:
         - Key: Project
           Value: event-driven-workflow
+
+  # ─── Lambda 4 — DLQ → S3 Archiver ───────────────────────────────────────────
+  Lambda4DLQArchiver:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub lambda4-dlq-archiver-${Environment}
+      Runtime: nodejs20.x
+      Handler: index.handler
+      Role: !GetAtt Lambda4Role.Arn
+      Timeout: 60
+      MemorySize: 128
+      Layers:
+        - !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:layer:event-workflow-deps:1
+      Code:
+        S3Bucket: !Ref LambdaCodeBucket
+        S3Key: lambda4-dlq-archiver.zip
+      Environment:
+        Variables:
+          DLQ_ARCHIVAL_BUCKET: !Ref DLQArchivalBucket
+          ENVIRONMENT: !Ref Environment
+      Tags:
+        - Key: Project
+          Value: event-driven-workflow
+
+  # DLQ → Lambda 4 trigger (automatic archival)
+  Lambda4DLQTrigger:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      EventSourceArn: !GetAtt EventBufferDLQ.Arn
+      FunctionName: !GetAtt Lambda4DLQArchiver.Arn
+      BatchSize: 10
+      Enabled: true
 
   # Allow SNS to invoke Lambda 3
   Lambda3SNSPermission:

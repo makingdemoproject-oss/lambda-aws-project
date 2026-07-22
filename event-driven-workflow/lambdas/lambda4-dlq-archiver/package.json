@@ -1,0 +1,7 @@
+{
+  "name": "lambda4-dlq-archiver",
+  "version": "1.0.0",
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.600.0"
+  }
+}
