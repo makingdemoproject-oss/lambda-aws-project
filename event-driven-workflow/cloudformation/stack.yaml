@@ -218,11 +218,13 @@ Resources:
     Type: AWS::Lambda::Function
     Properties:
       FunctionName: !Sub lambda1-message-processor-${Environment}
-      Runtime: nodejs18.x
+      Runtime: nodejs20.x
       Handler: index.handler
       Role: !GetAtt Lambda1Role.Arn
       Timeout: 30
       MemorySize: 256
+      Layers:
+        - !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:layer:event-workflow-deps:1
       Code:
         S3Bucket: !Ref LambdaCodeBucket
         S3Key: lambda1-processor.zip
@@ -252,11 +254,13 @@ Resources:
     Type: AWS::Lambda::Function
     Properties:
       FunctionName: !Sub lambda2-email-sender-${Environment}
-      Runtime: nodejs18.x
+      Runtime: nodejs20.x
       Handler: index.handler
       Role: !GetAtt Lambda2Role.Arn
       Timeout: 30
       MemorySize: 256
+      Layers:
+        - !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:layer:event-workflow-deps:1
       Code:
         S3Bucket: !Ref LambdaCodeBucket
         S3Key: lambda2-email.zip
@@ -282,11 +286,13 @@ Resources:
     Type: AWS::Lambda::Function
     Properties:
       FunctionName: !Sub lambda3-analytics-${Environment}
-      Runtime: nodejs18.x
+      Runtime: nodejs20.x
       Handler: index.handler
       Role: !GetAtt Lambda3Role.Arn
       Timeout: 30
       MemorySize: 256
+      Layers:
+        - !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:layer:event-workflow-deps:1
       Code:
         S3Bucket: !Ref LambdaCodeBucket
         S3Key: lambda3-analytics.zip
