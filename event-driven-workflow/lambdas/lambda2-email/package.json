@@ -1,0 +1,7 @@
+{
+  "name": "lambda2-email",
+  "version": "1.0.0",
+  "dependencies": {
+    "@aws-sdk/client-ses": "^3.600.0"
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "name": "lambda1-processor",
+  "version": "1.0.0",
+  "dependencies": {
+    "@aws-sdk/client-sns": "^3.600.0",
+    "pg": "^8.12.0"
+  }
+}

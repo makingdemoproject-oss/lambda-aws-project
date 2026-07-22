@@ -1,0 +1,377 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Event-Driven Workflow — EventBridge + SQS + SNS + Lambda + S3 + SES
+  Diagram: EventSource → EventBridge → SQS1 → Lambda1 → SNS → SQS2 → Lambda2 → SES
+                                                                      → Lambda3 (Analytics)
+                              Dead Letter Queue → S3 (Archival)
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, staging, production]
+
+  SESFromEmail:
+    Type: String
+    Default: demo-notif-36508@yopmail.com
+    Description: Verified SES sender email
+
+  LambdaCodeBucket:
+    Type: String
+    Description: S3 bucket where Lambda zip files are uploaded
+    Default: event-workflow-lambda-code
+
+  PostgreSQLHost:
+    Type: String
+    Default: 13.207.251.13
+    Description: PostgreSQL EC2 public IP (update after EC2 restart)
+
+  PostgreSQLPassword:
+    Type: String
+    Default: Lambda@1234
+    NoEcho: true
+
+Resources:
+
+  # ─── S3 — DLQ Archival ───────────────────────────────────────────────────────
+  DLQArchivalBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub event-dlq-archival-${Environment}-${AWS::AccountId}
+      LifecycleConfiguration:
+        Rules:
+          - Id: ArchiveOldMessages
+            Status: Enabled
+            Transitions:
+              - TransitionInDays: 30
+                StorageClass: GLACIER
+      Tags:
+        - Key: Project
+          Value: event-driven-workflow
+
+  # ─── SQS — Dead Letter Queue ─────────────────────────────────────────────────
+  EventBufferDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub event-buffer-dlq-${Environment}
+      MessageRetentionPeriod: 1209600  # 14 days
+      Tags:
+        - Key: Project
+          Value: event-driven-workflow
+
+  # ─── SQS — Queue 1 (Event Buffer) ────────────────────────────────────────────
+  EventBufferQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub event-buffer-queue-${Environment}
+      VisibilityTimeout: 300
+      MessageRetentionPeriod: 86400  # 1 day
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt EventBufferDLQ.Arn
+        maxReceiveCount: 3
+      Tags:
+        - Key: Project
+          Value: event-driven-workflow
+
+  # ─── SQS — Queue 2 (Notification Queue) ─────────────────────────────────────
+  NotificationQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub notification-queue-${Environment}
+      VisibilityTimeout: 300
+      MessageRetentionPeriod: 86400
+      Tags:
+        - Key: Project
+          Value: event-driven-workflow
+
+  # SQS Policy — Allow SNS to write to NotificationQueue
+  NotificationQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref NotificationQueue
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: sns.amazonaws.com
+            Action: sqs:SendMessage
+            Resource: !GetAtt NotificationQueue.Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !Ref EventNotificationTopic
+
+  # SQS Policy — Allow EventBridge to write to EventBufferQueue
+  EventBufferQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref EventBufferQueue
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sqs:SendMessage
+            Resource: !GetAtt EventBufferQueue.Arn
+
+  # ─── SNS — Event Notification Topic ──────────────────────────────────────────
+  EventNotificationTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub event-notification-topic-${Environment}
+      Tags:
+        - Key: Project
+          Value: event-driven-workflow
+
+  # SNS → SQS Queue 2 Subscription
+  SNStoSQSSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref EventNotificationTopic
+      Protocol: sqs
+      Endpoint: !GetAtt NotificationQueue.Arn
+
+  # SNS → Lambda 3 Subscription
+  SNStoLambda3Subscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref EventNotificationTopic
+      Protocol: lambda
+      Endpoint: !GetAtt Lambda3Analytics.Arn
+
+  # ─── IAM Role — Lambda 1 ─────────────────────────────────────────────────────
+  Lambda1Role:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub lambda1-processor-role-${Environment}
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaSQSQueueExecutionRole
+      Policies:
+        - PolicyName: Lambda1Policy
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action: sns:Publish
+                Resource: !Ref EventNotificationTopic
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                Resource: !GetAtt EventBufferQueue.Arn
+
+  # ─── IAM Role — Lambda 2 ─────────────────────────────────────────────────────
+  Lambda2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub lambda2-email-role-${Environment}
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaSQSQueueExecutionRole
+      Policies:
+        - PolicyName: Lambda2Policy
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action: ses:SendEmail
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                Resource: !GetAtt NotificationQueue.Arn
+
+  # ─── IAM Role — Lambda 3 ─────────────────────────────────────────────────────
+  Lambda3Role:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub lambda3-analytics-role-${Environment}
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  # ─── Lambda 1 — Message Processor A ─────────────────────────────────────────
+  Lambda1Processor:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub lambda1-message-processor-${Environment}
+      Runtime: nodejs18.x
+      Handler: index.handler
+      Role: !GetAtt Lambda1Role.Arn
+      Timeout: 30
+      MemorySize: 256
+      Code:
+        S3Bucket: !Ref LambdaCodeBucket
+        S3Key: lambda1-processor.zip
+      Environment:
+        Variables:
+          SNS_TOPIC_ARN: !Ref EventNotificationTopic
+          PG_HOST: !Ref PostgreSQLHost
+          PG_DATABASE: rbacdb
+          PG_USER: lambdauser
+          PG_PASSWORD: !Ref PostgreSQLPassword
+          ENVIRONMENT: !Ref Environment
+      Tags:
+        - Key: Project
+          Value: event-driven-workflow
+
+  # SQS → Lambda 1 trigger
+  Lambda1SQSTrigger:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      EventSourceArn: !GetAtt EventBufferQueue.Arn
+      FunctionName: !GetAtt Lambda1Processor.Arn
+      BatchSize: 10
+      Enabled: true
+
+  # ─── Lambda 2 — Email/Webhook Sender ─────────────────────────────────────────
+  Lambda2Email:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub lambda2-email-sender-${Environment}
+      Runtime: nodejs18.x
+      Handler: index.handler
+      Role: !GetAtt Lambda2Role.Arn
+      Timeout: 30
+      MemorySize: 256
+      Code:
+        S3Bucket: !Ref LambdaCodeBucket
+        S3Key: lambda2-email.zip
+      Environment:
+        Variables:
+          SES_FROM_EMAIL: !Ref SESFromEmail
+          ENVIRONMENT: !Ref Environment
+      Tags:
+        - Key: Project
+          Value: event-driven-workflow
+
+  # SQS → Lambda 2 trigger
+  Lambda2SQSTrigger:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      EventSourceArn: !GetAtt NotificationQueue.Arn
+      FunctionName: !GetAtt Lambda2Email.Arn
+      BatchSize: 5
+      Enabled: true
+
+  # ─── Lambda 3 — Update Analytics ─────────────────────────────────────────────
+  Lambda3Analytics:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub lambda3-analytics-${Environment}
+      Runtime: nodejs18.x
+      Handler: index.handler
+      Role: !GetAtt Lambda3Role.Arn
+      Timeout: 30
+      MemorySize: 256
+      Code:
+        S3Bucket: !Ref LambdaCodeBucket
+        S3Key: lambda3-analytics.zip
+      Environment:
+        Variables:
+          PG_HOST: !Ref PostgreSQLHost
+          PG_DATABASE: rbacdb
+          PG_USER: lambdauser
+          PG_PASSWORD: !Ref PostgreSQLPassword
+          ENVIRONMENT: !Ref Environment
+      Tags:
+        - Key: Project
+          Value: event-driven-workflow
+
+  # Allow SNS to invoke Lambda 3
+  Lambda3SNSPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt Lambda3Analytics.Arn
+      Action: lambda:InvokeFunction
+      Principal: sns.amazonaws.com
+      SourceArn: !Ref EventNotificationTopic
+
+  # ─── EventBridge — Event Bus ──────────────────────────────────────────────────
+  WorkflowEventBus:
+    Type: AWS::Events::EventBus
+    Properties:
+      Name: !Sub workflow-event-bus-${Environment}
+
+  # EventBridge Rule — Filter & Route to SQS Queue 1
+  EventBridgeRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub workflow-event-rule-${Environment}
+      EventBusName: !Ref WorkflowEventBus
+      Description: Routes filtered events to SQS Event Buffer
+      State: ENABLED
+      EventPattern:
+        source:
+          - prefix: com.myapp
+        detail-type:
+          - UserRegistered
+          - OrderPlaced
+          - PaymentProcessed
+          - UserUpdated
+      Targets:
+        - Arn: !GetAtt EventBufferQueue.Arn
+          Id: EventBufferQueueTarget
+
+Outputs:
+  EventBusName:
+    Value: !Ref WorkflowEventBus
+    Export:
+      Name: !Sub ${AWS::StackName}-EventBusName
+
+  EventBusArn:
+    Value: !GetAtt WorkflowEventBus.Arn
+    Export:
+      Name: !Sub ${AWS::StackName}-EventBusArn
+
+  EventBufferQueueUrl:
+    Value: !Ref EventBufferQueue
+    Export:
+      Name: !Sub ${AWS::StackName}-EventBufferQueueUrl
+
+  NotificationQueueUrl:
+    Value: !Ref NotificationQueue
+    Export:
+      Name: !Sub ${AWS::StackName}-NotificationQueueUrl
+
+  SNSTopicArn:
+    Value: !Ref EventNotificationTopic
+    Export:
+      Name: !Sub ${AWS::StackName}-SNSTopicArn
+
+  DLQArchivalBucketName:
+    Value: !Ref DLQArchivalBucket
+    Export:
+      Name: !Sub ${AWS::StackName}-DLQBucket
+
+  Lambda1Arn:
+    Value: !GetAtt Lambda1Processor.Arn
+
+  Lambda2Arn:
+    Value: !GetAtt Lambda2Email.Arn
+
+  Lambda3Arn:
+    Value: !GetAtt Lambda3Analytics.Arn
